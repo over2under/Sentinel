@@ -30,7 +30,6 @@ $RequestedSolutions=@(
 'Log4j Vulnerability Detection'
 'Windows Security Events'
 'Dev 0270 Detection and Hunting'
-'DEV-0537 Detection and Hunting'
 'Attacker Tools Threat Protection Essentials'
 'ZINC Open Source Threat Protection'
 'Windows Firewall'
