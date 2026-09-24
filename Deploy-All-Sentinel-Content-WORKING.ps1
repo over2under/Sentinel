@@ -11,6 +11,7 @@ $MaxRetryAttempts=2
 $RequestedSolutions=@(
 'Azure Activity'
 'Microsoft 365'
+'Agent 365'
 'Data collection health monitoring'
 'Threat Intelligence'
 'Microsoft Defender XDR'
