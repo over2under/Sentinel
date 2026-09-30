@@ -2,10 +2,47 @@
 <#
 .DESCRIPTION
 Select a subscription, resource group and Sentinel workspace interactively.
+Enter B or Back at the resource-group or workspace menu to return to the previous
+selection. Going back clears dependent selections, including parameter overrides.
 Deploy missing/newer Content Hub content, then reconcile ALL installed connectors,
 including connectors left incomplete by an earlier run. Existing source selections
 and customized analytics rules are preserved. Package version is not proof of
 deployed rules/workbooks: their individual deployment checks still run.
+Successful workspace contentPackages discovery drives installation: absent packages
+install; older versions upgrade with the official incremental ARM package, including
+inline nested deployments and all packaged content. Current versions skip package
+installation; supported owned-artifact checks can repair demonstrably missing content.
+Local ARM expression inspection is supplementary, never a prerequisite for first
+installation or upgrading. ARM validates parameter/reference expressions, and the
+script verifies terminal deployment success plus the installed package ID/version.
+Unknown installed versions require review (no speculative downgrade). An unavailable
+package body cannot be replaced with a registration-only write. Detailed artifact
+checks may be partial; this is reported separately from verified installation.
+Artifact verification accepts documented one-to-four-part versions and uses exact
+resource/parent/content identity. Missing optional provenance or list-projected
+template bodies are not treated as absent resources; scoped detail GETs resolve
+projections. Genuine absence, conflicting identity and failed reads remain explicit.
+SharedPresent is limited to five reviewed SOC/TI shared dependencies: exact declared
+content/kind/version, reviewed owner and nested provenance, plus equivalent payload
+or exact pinned published variants. Foreign/changed/unknown artifacts authorize no
+repair. Shared templates do not prove saved workbooks or configured ingestion.
+Package rows in the JSON report retain expected/observed artifact identities,
+versions and API read outcomes, not template/query bodies or credentials.
+The canonical tenant, subscription, workspace ARM ID and workspace CustomerId are
+displayed/verified; package reads cannot silently target another workspace.
+Analytics rules reuse verified template-linked IDs. Workbooks use saved-resource
+inventory plus workspace ownership and Sentinel metadata, not template presence alone.
+Exact-name collisions, ambiguous matches and saved workbooks missing metadata are
+preserved with ActionRequired warnings, never overwritten or duplicated. New resources
+use deterministic workspace/content IDs; repeated templates are processed once.
+Workbook inventory reads both Sentinel and general workbook categories throughout
+the selected subscription (read permission required), but only selected-workspace
+artifacts participate in matching. Existing saved-resource IDs/locations are retained.
+Pre-existing duplicates are not deleted. Inert Content Hub templates can still appear
+alongside deployed resources in the portal; they are not duplicate runtime resources.
+NRT (near-real-time) analytics rules are skipped: no creation, update, deletion
+or metadata changes to existing NRT rules. Scheduled rules still deploy normally.
+Content Hub may retain inert NRT templates; those are not active analytics rules.
 Rule-only HTTP 400 validation failures are reported separately and do not prevent
 supported connector configuration after package verification. They remain failures
 in the final run result and appear as Content rows in the JSON report.
@@ -18,7 +55,9 @@ evidence and remaining inputs; control-plane configuration is not end-to-end rea
 API connectors mean supported Sentinel dataConnectors APIs, not Logic App connections.
 Unknown CCF/vendor/Agent/PurviewAudit definitions require their exact source contract,
 credentials/consent and connector-page setup; metadata instructions are never executed.
-No playbook execution, Logic Apps, API connections or playbook permission grants.
+No playbook discovery/deployment/execution, Logic Apps, API connections or playbook
+permission grants. Packages containing executable rules/workbooks outside the
+identity-checked deployer, or executable workflows/connections, fail closed.
 Policies are manual by default. ConfigureConnectorPolicies opts into seven pinned,
 reviewed built-ins in the selected Sentinel subscription by default. Override with
 ConnectorPolicyScopeIds for explicit subscription/resource-group scopes.
@@ -27,8 +66,10 @@ overwritten. Unknown schemas, conflicts and newly conflicting diagnostics requir
 manual review. GrantConnectorPolicyRoles and RemediateConnectorPolicies separately
 authorize privileged identity grants and asynchronous remediation. No rollback is
 promised; assignment acceptance never means source configuration or ingestion.
-Defaults: source subscription is the workspace subscription; ALL Entra diagnostic
-log categories advertised by the tenant; existing Storage/NSG/Purview sources are discovered in selected source
+Defaults: source subscription is the workspace subscription; Entra requests All.
+If Entra category discovery is unavailable, the six reference log categories are
+configured and additional-category coverage is explicitly reported as unverified.
+Existing Storage/NSG/Purview sources are discovered in selected source
 subscriptions. Ingestion may incur charges. Scope with SourceSubscriptionIds and
 DiagnosticResourceIds before applying. Use WhatIf to preview connector writes.
 Requires Azure resource read/write privileges for the selected resources, Sentinel
@@ -42,20 +83,30 @@ Skip repository preparation, Content Hub deployment and connector configuration.
 Read installed connector/native/diagnostic status and optionally save the JSON report.
 No Azure resources are written by this mode. Unknown means status is not verifiable
 by an implemented adapter, not that the connector is disconnected.
+.PARAMETER ContentStatusOnly
+Read package registrations and supported packaged-artifact evidence without cloning
+the repository, installing content or configuring connectors. Target selection and
+final read-only connector inventory still run. Use with ConnectorReportPath to
+diagnose exact missing/outdated/conflicting artifacts before another deployment.
+Mutually exclusive with ConnectorStatusOnly and ConfigureConnectorsOnly.
 .PARAMETER ConfigureConnectorsOnly
 Configure supported already-installed connectors without running Content Hub or
 analytics-rule deployment. Existing source selections and opt-in controls still
-apply. Mutually exclusive with ConnectorStatusOnly. Does not repair failed rules.
+apply. Mutually exclusive with the two read-only modes. Does not repair failed rules.
 .PARAMETER ConnectorReportPath
-Optional local JSON report file with full actions, errors and requirements.
+Optional local JSON report file with full actions, errors, requirements and Package
+rows containing exact safe artifact diagnostics (including after deployment failure).
 The terminal shows a compact connector summary; use -Verbose for technical detail.
 .PARAMETER EntraLogCategories
-Defaults to All: discovers current tenant diagnostic log categories and enables
-missing categories for the selected Sentinel workspace. Existing settings and
-destinations are preserved. Reruns include newly advertised categories.
-Requires successful category discovery; no fallback to just AuditLogs/SignInLogs.
-Individual categories may require additional licenses/roles and increase ingestion
-costs. To intentionally collect fewer logs, supply explicit category names.
+Defaults to All. Tries tenant category discovery, but HTTP 400/404/405 or an empty
+category list no longer blocks setup: uses AuditLogs, SignInLogs,
+NonInteractiveUserSignInLogs, ServicePrincipalSignInLogs,
+ManagedIdentitySignInLogs and ProvisioningLogs from the working reference command.
+This fallback does NOT claim all tenant categories are enabled; the report requests
+review of additional categories. Explicit category names bypass discovery entirely.
+Uses tenant diagnosticSettings GET/PUT with api-version=2017-04-01 and the selected
+workspace ARM resource ID, not its CustomerId. Settings/destinations are preserved.
+Individual categories may require additional licenses/roles and increase costs.
 .PARAMETER ConfigureCopilot
 Explicitly allow the reviewed MicrosoftCopilot/CopilotGeneral PurviewAudit adapter.
 Creates missing DCR/DCE only in the workspace resource group/region, with public
@@ -144,6 +195,7 @@ param(
     [string]$ConnectorReportPath,
     # Read-only Azure inventory; skips Content Hub deployment and connector writes.
     [switch]$ConnectorStatusOnly,
+    [switch]$ContentStatusOnly,
     [switch]$ConfigureConnectorsOnly,
     [switch]$PassThru,
     [switch]$FailOnConnectorError
@@ -152,8 +204,8 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $script:ChangeCaller = $PSCmdlet
-if ($ConnectorStatusOnly -and $ConfigureConnectorsOnly) {
-    throw 'Use either -ConnectorStatusOnly (read-only) or -ConfigureConnectorsOnly (apply supported connector setup), not both.'
+if (@(@($ConnectorStatusOnly, $ContentStatusOnly, $ConfigureConnectorsOnly) | Where-Object { $_ }).Count -gt 1) {
+    throw 'Choose one of -ContentStatusOnly, -ConnectorStatusOnly (read-only), or -ConfigureConnectorsOnly (apply supported connector setup).'
 }
 
 if (-not $RepoPath) {
@@ -233,18 +285,97 @@ function Ensure-AzureLogin {
     Connect-AzAccount -UseDeviceAuthentication -ErrorAction Stop | Out-Null
 }
 
-function Select-ItemNumber([array]$Items, [scriptblock]$Display, [string]$Prompt) {
-    if ($Items.Count -eq 0) { throw "No options found for $Prompt" }
+function Select-ItemNumber([array]$Items, [scriptblock]$Display, [string]$Prompt, [switch]$AllowBack, [string]$BackLabel = 'Previous selection') {
+    if ($Items.Count -eq 0) {
+        if (-not $AllowBack) { throw "No options found for $Prompt" }
+        Write-Warning 'No items are available here. Enter B to go back and choose a different target.'
+    }
     for ($i = 0; $i -lt $Items.Count; $i++) {
         Write-Host ("  [{0}] {1}" -f ($i + 1), (& $Display $Items[$i]))
     }
+    if ($AllowBack) { Write-Host "  [B] Back - $BackLabel" -ForegroundColor Yellow }
     do {
         $raw = (Read-Host $Prompt).Trim()
+        if ($AllowBack -and $raw -in @('B', 'Back')) { return $null }
         $number = 0
         $valid = [int]::TryParse($raw, [ref]$number) -and $number -ge 1 -and $number -le $Items.Count
-        if (-not $valid) { Write-Warning "Enter 1-$($Items.Count)." }
+        if (-not $valid) {
+            $choices = if ($Items.Count) { "Enter 1-$($Items.Count)" } else { 'No numbered choices are available' }
+            if ($AllowBack) { $choices += ', or B to go back' }
+            Write-Warning "$choices."
+        }
     } until ($valid)
     $Items[$number - 1]
+}
+
+function Select-SentinelTarget([string]$TargetSubscriptionId, [string]$TargetResourceGroup, [string]$TargetWorkspace) {
+    $stage = 'Subscription'
+    $selectedGroup = $null
+    $selectedWorkspace = $null
+    $selectedContext = $null
+    while ($stage -ne 'Done') {
+        switch ($stage) {
+            'Subscription' {
+                if ($TargetSubscriptionId) {
+                    $TargetSubscriptionId = ([guid]::Parse($TargetSubscriptionId)).ToString()
+                } else {
+                    $subscriptions = @(Get-AzSubscription | Where-Object State -eq 'Enabled' | Sort-Object Name)
+                    Write-Host 'Available subscriptions:' -ForegroundColor Cyan
+                    $selectedSubscription = Select-ItemNumber $subscriptions { param($item) "$($item.Name) [$($item.Id)]" } 'Select subscription number'
+                    $TargetSubscriptionId = [string]$selectedSubscription.Id
+                }
+                $selectedContext = Set-AzContext -SubscriptionId $TargetSubscriptionId -ErrorAction Stop
+                $stage = 'ResourceGroup'
+            }
+            'ResourceGroup' {
+                if ($TargetResourceGroup) {
+                    $selectedGroup = Get-AzResourceGroup -Name $TargetResourceGroup -ErrorAction Stop
+                } else {
+                    $groups = @(Get-AzResourceGroup | Sort-Object ResourceGroupName)
+                    Write-Host "`nAvailable resource groups in subscription $TargetSubscriptionId :" -ForegroundColor Cyan
+                    $selectedGroup = Select-ItemNumber $groups { param($item) "$($item.ResourceGroupName) [$($item.Location)]" } 'Select resource group number (or B to go back)' -AllowBack -BackLabel 'Subscriptions'
+                }
+                if ($null -eq $selectedGroup) {
+                    $TargetSubscriptionId = ''
+                    $TargetResourceGroup = ''
+                    $TargetWorkspace = ''
+                    $selectedWorkspace = $null
+                    $stage = 'Subscription'
+                } else {
+                    $stage = 'Workspace'
+                }
+            }
+            'Workspace' {
+                if ($TargetWorkspace) {
+                    $selectedWorkspace = Get-AzOperationalInsightsWorkspace -ResourceGroupName $selectedGroup.ResourceGroupName -Name $TargetWorkspace -ErrorAction Stop
+                } else {
+                    $workspaces = @(Get-AzOperationalInsightsWorkspace -ResourceGroupName $selectedGroup.ResourceGroupName | Sort-Object Name)
+                    Write-Host "`nAvailable Log Analytics workspaces in $($selectedGroup.ResourceGroupName):" -ForegroundColor Cyan
+                    $selectedWorkspace = Select-ItemNumber $workspaces {
+                        param($item)
+                        $location = Safe-Prop $item 'Location'
+                        if (-not $location) { $location = Safe-Prop $item 'ResourceLocation' }
+                        if (-not $location) { $location = 'region resolved after selection' }
+                        "$($item.Name) [$location]"
+                    } 'Select Sentinel workspace number (or B to go back)' -AllowBack -BackLabel 'Resource groups'
+                }
+                if ($null -eq $selectedWorkspace) {
+                    $TargetResourceGroup = ''
+                    $TargetWorkspace = ''
+                    $selectedGroup = $null
+                    $stage = 'ResourceGroup'
+                } else {
+                    $stage = 'Done'
+                }
+            }
+        }
+    }
+    [pscustomobject]@{
+        SubscriptionId = $TargetSubscriptionId
+        Context = $selectedContext
+        ResourceGroup = $selectedGroup
+        Workspace = $selectedWorkspace
+    }
 }
 
 function Safe-Prop([object]$Object, [string]$Name) {
@@ -357,6 +488,48 @@ function Installed-Names {
     return ,$set
 }
 
+function Confirmed-ContentHubPackageNames([string[]]$Names, [switch]$DiagnosticOnly) {
+    $script:ServerUrl = $script:ArmEndpoint.AbsoluteUri.TrimEnd('/')
+    $script:BaseUri = "$script:ServerUrl$script:WorkspaceId"
+    $script:SentinelApiVersion = $ApiVersion
+    $script:ContentHubUnresolvedFailures = @{}
+    $script:ContentHubRequestDetails = @{}
+    $script:ContentHubApiFailures = 0
+    . ([scriptblock]::Create("function Invoke-SentinelApi {`n$((Get-Command Invoke-ContentHubArmApi).Definition)`n}"))
+    Confirm-ContentHubSelectedTarget
+    $root = "$script:BaseUri/providers/Microsoft.SecurityInsights"
+    $catalog = Invoke-SentinelApi -Uri "$root/contentProductPackages?api-version=$ApiVersion" -Method GET -Headers @{}
+    $ledger = Invoke-SentinelApi -Uri "$root/contentPackages?api-version=$ApiVersion" -Method GET -Headers @{}
+    $lookup = @{}
+    foreach ($entry in $ledger.value) {
+        $name = [string](Get-ContentHubField $entry.properties 'displayName')
+        if ($name) {
+            if ($lookup.ContainsKey($name)) { throw "Ambiguous package registration: $name" }
+            $lookup[$name] = $entry
+        }
+    }
+    $confirmed = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+    foreach ($name in $Names) {
+        $status = Get-VersionAwareSolutionStatus $name @($catalog.value) $lookup
+        if ($status.CatalogEntry) {
+            if ($DiagnosticOnly -and $status.Presence.State -in @('Pending', 'Unverified')) {
+                $status.Presence = Test-ContentHubPackagePresence $status.CatalogEntry
+            }
+            Save-ContentHubPackageDiagnostic $status.CatalogEntry $status.Presence $status.InstalledVersion
+            $script:ContentHubPackageDiagnostics[[string]$status.CatalogEntry.name] | Add-Member InstallationStatus $status.Status -Force
+        }
+        if ($status.Status -eq 'Installed' -and $status.Presence.State -in @('Verified', 'NotFullyInspected')) {
+            [void]$confirmed.Add($name)
+            if ($status.Presence.State -eq 'NotFullyInspected') { Write-Verbose "$name registered version verified; detailed artifact inspection is partial. $($status.Presence.Detail)" }
+        }
+        else {
+            $detail = if ($status.Presence) { $status.Presence.Detail } else { 'Not present in the current catalog.' }
+            Write-Warning "$name package installation not confirmed: $($status.Status); $detail"
+        }
+    }
+    return ,$confirmed
+}
+
 # Upstream passes a startup-only bearer header to every request. Do not use it:
 # Az.Accounts obtains/renews ARM credentials through the existing Azure context.
 # This adapter is installed only in a temporary copy of the Content Hub deployer.
@@ -369,6 +542,7 @@ function Invoke-ContentHubArmApi {
         [string]$Body,
         [switch]$OptionalWorkbookProbe,
         [switch]$AllowMissingWorkbook,
+        [switch]$AllowMissingContentArtifact,
         [string[]]$VisitedPages = @(),
         [ValidateRange(1, 10)][int]$MaxRetries = 3,
         [ValidateRange(0, 30)][int]$RetryDelaySeconds = 5
@@ -396,6 +570,25 @@ function Invoke-ContentHubArmApi {
         if ([string]$context.Subscription.Id -ne $script:SubscriptionId) {
             throw 'Azure subscription context changed during Content Hub deployment.'
         }
+        $expectedTarget = Get-Variable ContentHubExpectedTarget -Scope Script -ValueOnly -ErrorAction SilentlyContinue
+        if ($expectedTarget) {
+            if ([string]$context.Tenant.Id -ne $expectedTarget.TenantId -or [string]$context.Subscription.Id -ne $expectedTarget.SubscriptionId) {
+                throw 'Selected Content Hub tenant/subscription context changed.'
+            }
+            if ($target.AbsolutePath -match '^/subscriptions/([^/]+)(?:/|$)' -and $matches[1] -ne $expectedTarget.SubscriptionId) {
+                throw 'Content Hub request targets a different subscription than the canonical target.'
+            }
+            if ($target.AbsolutePath -match '(?i)^(.*/providers/Microsoft\.OperationalInsights/workspaces/[^/]+)(?:/|$)' -and
+                $matches[1] -ne $expectedTarget.WorkspaceResourceId) {
+                throw 'Content Hub request targets a different workspace than the selected canonical target.'
+            }
+        }
+        if ($Method -eq 'PUT' -and $target.AbsolutePath -match '/Microsoft\.SecurityInsights/alertRules/[^/]+$' -and $Body) {
+            $rulePayload = $Body | ConvertFrom-Json -Depth 100
+            if ($rulePayload.PSObject.Properties['kind'] -and $rulePayload.kind -eq 'NRT') {
+                throw 'NRT rule deployment is disabled. No NRT write was submitted.'
+            }
+        }
         $request = @{
             Uri = $Uri
             Method = $Method
@@ -411,8 +604,19 @@ function Invoke-ContentHubArmApi {
                         if ($type.StartsWith('[') -or $type -match 'Microsoft\.(Logic|Web/connections|Authorization|Resources/deploymentScripts)') {
                             throw "Package contains a prohibited executable resource type: $type. No deployment submitted."
                         }
+                        if ($type -match '(^|/)alertRules$' -and $resource.PSObject.Properties['kind'] -and $resource.kind -eq 'NRT') {
+                            throw 'Package contains an executable NRT rule. No deployment submitted; inert NRT content templates are permitted.'
+                        }
+                        if ($type -match '(^|/)(alertRules|workbooks|workflows|connections)$') {
+                            throw "Package contains executable $type outside the identity-checked content deployer. No deployment submitted; inert content templates are permitted."
+                        }
                         if ($type -match '(^|/)deployments$') {
                             if ($resource.properties.PSObject.Properties['templateLink']) { throw 'Linked package deployments are not permitted.' }
+                            if (-not $resource.properties.PSObject.Properties['template'] -or
+                                $resource.properties.template -is [string] -or
+                                -not $resource.properties.template.PSObject.Properties['resources']) {
+                                throw 'Nested package deployment requires an inspectable inline ARM template.'
+                            }
                             Assert-PackageResources $resource.properties.template
                         }
                         # Stored contentTemplates are inert; do not traverse mainTemplate.
@@ -447,6 +651,14 @@ function Invoke-ContentHubArmApi {
             }
             if ($status -ge 200 -and $status -lt 300) {
                 $data = if ($response.Content) { $response.Content | ConvertFrom-Json -Depth 100 }
+                if ($AllowMissingContentArtifact -and $Method -eq 'GET' -and
+                    (-not $data -or -not $data.PSObject.Properties['id'])) {
+                    throw 'Artifact GET returned no resource identity; absence was not established.'
+                }
+                if ($Method -eq 'GET' -and $target.AbsolutePath -match '/(alertRules|metadata|workbooks|contentTemplates|contentPackages|contentProductPackages|dataConnectors|dataConnectorDefinitions|savedSearches)$' -and
+                    (-not $data -or -not $data.PSObject.Properties['value'] -or $data.value -isnot [array])) {
+                    throw 'Incomplete content inventory response; refusing to infer resource absence.'
+                }
                 # A later successful call resolves an earlier failed probe of
                 # this exact method/URI; do not confuse history with final failure.
                 $script:ContentHubUnresolvedFailures.Remove($failureKey)
@@ -553,14 +765,18 @@ function Invoke-ContentHubArmApi {
             $safePath -match '/Microsoft\.SecurityInsights/contentTemplates/[^/]+$'
         $missingWorkbook = $Method -eq 'GET' -and $AllowMissingWorkbook -and $status -eq 404 -and
             $safePath -match '/Microsoft\.Insights/workbooks/[^/]+$'
-        if (-not $expectedProbe -and -not $missingWorkbook -and -not $prerequisite) {
+        $missingArtifact = $Method -eq 'GET' -and $AllowMissingContentArtifact -and $status -eq 404 -and
+            $safePath -match '/Microsoft\.SecurityInsights/(contentTemplates|metadata|dataConnectors|dataConnectorDefinitions)/[^/?#]+$'
+        if ($AllowMissingContentArtifact -and $Method -eq 'GET' -and $status -eq 404 -and
+            $safePath -match '/Microsoft\.OperationalInsights/workspaces/[^/]+/savedSearches/[^/?#]+$') { $missingArtifact = $true }
+        if (-not $expectedProbe -and -not $missingWorkbook -and -not $missingArtifact -and -not $prerequisite) {
             $script:ContentHubUnresolvedFailures[$failureKey] = $failure
             $script:ContentHubRequestDetails[$failureKey] = [pscustomobject]@{
                 Method = $Method.ToUpperInvariant(); ResourceId = $safePath; HttpStatus = $status
                 AzureErrorCode = $serviceCode; RuleName = $ruleName; Reason = $reason; RequestId = $requestId
             }
         }
-        if ($missingWorkbook) { return $null }
+        if ($missingWorkbook -or $missingArtifact) { return $null }
         if ($expectedProbe) { Write-Verbose "Optional workbook identifier unavailable; upstream will try its fallback: $failure" }
         elseif ($prerequisite) { Write-Warning "Rule prerequisite unavailable: $prerequisite. Existing rules are retained; retry after source ingestion/schema is available." }
         else { Write-Warning "Content Hub request failed: $failure; Azure code=$serviceCode" }
@@ -572,16 +788,28 @@ function Get-VersionAwareSolutionStatus {
     param([string]$SolutionName, [array]$AvailableSolutions, [hashtable]$InstalledLookup)
     $catalog = @($AvailableSolutions | Where-Object {
         $_.properties.PSObject.Properties['displayName'] -and $_.properties.displayName -eq $SolutionName
-    } | Select-Object -First 1)
+    })
     $result = @{
         Name = $SolutionName; Status = 'NotFound'; AvailableVersion = $null
         InstalledVersion = $null; CatalogEntry = $null; InstalledPackage = $null; Action = 'None'
+        Presence = @{ State = 'Pending'; Detail = 'Package deployment and registration readback have not run.' }
+        DeploymentSucceeded = $null
     }
     if (-not $catalog.Count) { return $result }
+    if ($catalog.Count -ne 1) { throw "Ambiguous catalog solution name: $SolutionName. Select a verified package identity before deployment." }
     $result.CatalogEntry = $catalog[0]
     if ($catalog[0].properties.PSObject.Properties['version']) { $result.AvailableVersion = [string]$catalog[0].properties.version }
     $result.Action = 'Install'
     $result.Status = 'NotInstalled'
+    if ($null -eq (Compare-ContentHubArtifactVersion $result.AvailableVersion $result.AvailableVersion)) {
+        $result.Status = 'Unverified'
+        $result.Action = 'None'
+        $result.Presence = @{ State = 'Unverified'; Detail = 'Catalog version is unknown; no version can be selected safely.' }
+        return $result
+    }
+    # A successful contentPackages inventory is authoritative for absence. Do not
+    # make installation depend on our ability to interpret every ARM expression.
+    if (-not $InstalledLookup.ContainsKey($SolutionName)) { return $result }
     if ($InstalledLookup.ContainsKey($SolutionName)) {
         $result.InstalledPackage = $InstalledLookup[$SolutionName]
         $properties = $result.InstalledPackage.properties
@@ -591,11 +819,12 @@ function Get-VersionAwareSolutionStatus {
                 break
             }
         }
-        $available = $null
-        $installed = $null
-        $known = [System.Management.Automation.SemanticVersion]::TryParse($result.AvailableVersion, [ref]$available) -and
-            [System.Management.Automation.SemanticVersion]::TryParse($result.InstalledVersion, [ref]$installed)
-        if ($known -and $installed -ge $available) {
+        $versionComparison = Compare-ContentHubArtifactVersion $result.InstalledVersion $result.AvailableVersion
+        if ($null -eq $versionComparison) {
+            $result.Status = 'Unverified'; $result.Action = 'None'
+            $result.Presence = @{ State = 'Unverified'; Detail = 'Installed version is unknown; review it before upgrading or risking a downgrade.' }
+            return $result
+        } elseif ($versionComparison -ge 0) {
             # Product catalog is not an installation ledger. Its missing
             # isInstalled field must not force repeated package reinstallation.
             $result.Status = 'Installed'
@@ -605,6 +834,925 @@ function Get-VersionAwareSolutionStatus {
             $result.Action = 'Update'
         }
     }
+    if ($result.InstalledPackage) {
+        $registeredId = Get-ContentHubField $result.InstalledPackage.properties 'contentId'
+        $catalogId = Get-ContentHubField $result.CatalogEntry.properties 'contentId'
+        if ($registeredId -and $catalogId -and $registeredId -ne $catalogId) {
+            $result.Status = 'Unverified'; $result.Action = 'None'
+            $result.Presence = @{ State = 'Unverified'; Detail = 'Package display-name collision with a different registered content ID.' }
+            return $result
+        }
+    }
+    # Older packages take the official incremental upgrade path. Presence checking
+    # supplements only the latest-version skip; unsupported manifests are not absence.
+    if ($result.Action -eq 'Update') { return $result }
+    $result.Presence = Test-ContentHubPackagePresence $result.CatalogEntry
+    if ($result.Presence.State -eq 'Unverified') {
+        $result.Presence.State = 'NotFullyInspected'
+        $result.Presence.Detail = "Registered version is current; no missing content was established. Detailed manifest inspection unavailable: $($result.Presence.Detail)"
+    } elseif ($result.Presence.State -eq 'Missing') {
+        if ((Compare-ContentHubArtifactVersion $result.InstalledVersion $result.AvailableVersion) -gt 0) {
+            $result.Status = 'Unverified'; $result.Action = 'None'
+            $result.Presence.State = 'Unverified'
+            $result.Presence.Detail = 'The ledger is newer than this catalog manifest; do not repair using an older package.'
+        } elseif ($result.Presence.RepairTemplate) {
+            $result.Status = 'RepairRequired'; $result.Action = 'Update'
+        } else {
+            $result.Status = 'Unverified'; $result.Action = 'None'
+            $result.Presence.Detail += ' Missing content needs manual repair because a safe selective repair could not be constructed.'
+        }
+    }
+    return $result
+}
+
+function Compare-ContentHubArtifactVersion([string]$Installed, [string]$Expected) {
+    # Sentinel explicitly supports numeric versions with one through four parts.
+    # SemVer alone rejects the documented metadata version "1.0.0.0".
+    if ($Installed -match '^\d+(\.\d+){0,3}$' -and $Expected -match '^\d+(\.\d+){0,3}$') {
+        $left = $Installed -split '\.'; $right = $Expected -split '\.'
+        for ($index = 0; $index -lt 4; $index++) {
+            $a = if ($index -lt $left.Count) { [System.Numerics.BigInteger]::Parse($left[$index]) } else { [System.Numerics.BigInteger]::Zero }
+            $b = if ($index -lt $right.Count) { [System.Numerics.BigInteger]::Parse($right[$index]) } else { [System.Numerics.BigInteger]::Zero }
+            $comparison = $a.CompareTo($b)
+            if ($comparison -ne 0) { return $comparison }
+        }
+        return 0
+    }
+    $versions = @()
+    foreach ($text in @($Installed, $Expected)) {
+        if ($text -match '^\d+(\.\d+)?$') { while (($text -split '\.').Count -lt 3) { $text += '.0' } }
+        $version = $null
+        if (-not [Management.Automation.SemanticVersion]::TryParse($text, [ref]$version)) { return $null }
+        $versions += $version
+    }
+    return $versions[0].CompareTo($versions[1])
+}
+
+function Confirm-ContentHubSelectedTarget {
+    $expected = Get-Variable ContentHubExpectedTarget -Scope Script -ValueOnly -ErrorAction SilentlyContinue
+    if (-not $expected) { throw 'The canonical selected Content Hub target was not supplied.' }
+    $context = Get-AzContext -ErrorAction Stop
+    $endpoint = ([string]$context.Environment.ResourceManagerUrl).TrimEnd('/')
+    if ($script:SubscriptionId -ne $expected.SubscriptionId -or [string]$context.Subscription.Id -ne $expected.SubscriptionId -or
+        [string]$context.Tenant.Id -ne $expected.TenantId -or $script:BaseUri.TrimEnd('/') -ne "$endpoint$($expected.WorkspaceResourceId)") {
+        throw 'Content Hub initialization does not match the selected tenant/subscription/workspace.'
+    }
+    $resource = Invoke-SentinelApi -Uri "$script:BaseUri`?api-version=2022-10-01" -Method GET -Headers @{}
+    if ($resource.id -ne $expected.WorkspaceResourceId) { throw 'Canonical workspace GET returned a different resource ID.' }
+    if ($expected.CustomerId -and [string]$resource.properties.customerId -ne $expected.CustomerId) { throw 'Workspace was recreated or changed after selection. Select the target again; no cached installation evidence may be reused.' }
+    $script:ContentHubPresenceInventory = @{}
+    Write-Host "Content Hub target tenant: $($expected.TenantId); subscription: $($expected.SubscriptionId)" -ForegroundColor Cyan
+    Write-Host "Canonical workspace: $($resource.id); customerId: $($resource.properties.customerId)" -ForegroundColor Cyan
+}
+
+function Write-ContentHubPackagePresenceReport($SolutionStatuses) {
+    Write-PipelineMessage 'Content Hub solutions: installed version versus latest catalog version' -Level Section
+    $rows = [Collections.Generic.List[object]]::new()
+    foreach ($status in $SolutionStatuses) {
+        $label = switch ($status.Status) {
+            Installed { 'Current' }
+            NotInstalled { 'Not installed' }
+            UpdateAvailable { 'Older' }
+            RepairRequired { 'Content missing' }
+            NotFound { 'Not in catalog' }
+            default { 'Version/identity unknown' }
+        }
+        $action = switch ($status.Action) {
+            'Install' { 'Install' }
+            'Update' { if ($status.Status -eq 'RepairRequired') { 'Repair missing' } else { 'Upgrade' } }
+            default { if ($status.Status -eq 'Unverified') { 'Review version' } else { 'Skip package' } }
+        }
+        $rows.Add([pscustomobject]@{
+            Solution = $status.Name
+            Installed = $(if ($status.InstalledVersion) { $status.InstalledVersion } else { '-' })
+            Latest = $(if ($status.AvailableVersion) { $status.AvailableVersion } else { '-' })
+            Status = $label
+            Action = $action
+        })
+        if ($status.Presence) {
+            Write-Verbose "$($status.Name): status=$($status.Status); action=$($status.Action); $($status.Presence.Detail)"
+            if ($status.Status -eq 'Unverified') { Write-PipelineMessage "$($status.Name): $($status.Presence.Detail)" -Level Warning }
+        }
+    }
+    $table = $rows | Format-Table @{ Name = 'Solution'; Expression = { $_.Solution }; Width = 46 },
+        @{ Name = 'Installed version'; Expression = { $_.Installed }; Width = 17 },
+        @{ Name = 'Latest version'; Expression = { $_.Latest }; Width = 15 },
+        @{ Name = 'Status'; Expression = { $_.Status }; Width = 24 },
+        @{ Name = 'Action'; Expression = { $_.Action }; Width = 15 } -Wrap |
+        Out-String -Width 126
+    Write-PipelineMessage $table.TrimEnd() -Level Info
+    Write-PipelineMessage 'Installed = workspace contentPackages version. New/older solutions deploy their official ARM package, including inline nested deployments. Current packages skip installation; rules/workbooks still reconcile independently.' -Level Info
+    Write-PipelineMessage 'Packaged Playbook templates are inert and permitted; runtime Playbooks and NRT rules remain excluded. Source licensing, consent and ingestion are separate from installation.' -Level Info
+}
+
+function Confirm-ContentHubPackageArtifacts($SolutionStatuses) {
+    $script:ContentHubPresenceInventory = @{}
+    $script:ContentHubPackageUnverified = @{}
+    if ($WhatIf) { Write-PipelineMessage 'WhatIf: package installation/readback was not performed.' -Level Info; return }
+    $ledger = Invoke-SentinelApi -Uri "$script:BaseUri/providers/Microsoft.SecurityInsights/contentPackages?api-version=$script:SentinelApiVersion" -Method GET -Headers @{}
+    foreach ($status in $SolutionStatuses) {
+        if ($status.Status -eq 'NotFound') { continue }
+        if ($status.Status -eq 'Unverified' -or ($status.Action -ne 'None' -and $status.DeploymentSucceeded -ne $true)) {
+            $script:ContentHubPackageUnverified[$status.Name] = 'Package version/identity is unknown or the ARM installation did not succeed.'
+            $status.Presence = @{ State = 'Unverified'; Detail = $script:ContentHubPackageUnverified[$status.Name]; Missing = @(); Artifacts = @() }
+            Save-ContentHubPackageDiagnostic $status.CatalogEntry $status.Presence $status.InstalledVersion
+            continue
+        }
+        $packageId = [string](Get-ContentHubField $status.CatalogEntry.properties 'contentId')
+        if (-not $packageId) { $packageId = [string]$status.CatalogEntry.name }
+        $registered = $false
+        for ($attempt = 0; $attempt -lt 3; $attempt++) {
+            $matches = @($ledger.value | Where-Object {
+                (Get-ContentHubField $_.properties 'contentId') -eq $packageId -or $_.name -eq $packageId
+            })
+            if ($matches.Count -eq 1) {
+                $p = $matches[0].properties
+                $version = Get-ContentHubField $p 'installedVersion'
+                if (-not $version) { $version = Get-ContentHubField $p 'version' }
+                $comparison = Compare-ContentHubArtifactVersion $version $status.AvailableVersion
+                if ($null -ne $comparison -and $comparison -ge 0) { $registered = $true; break }
+            }
+            if ($status.Action -eq 'None' -or $attempt -eq 2) { break }
+            Start-Sleep -Seconds 5
+            $ledger = Invoke-SentinelApi -Uri "$script:BaseUri/providers/Microsoft.SecurityInsights/contentPackages?api-version=$script:SentinelApiVersion" -Method GET -Headers @{}
+        }
+        if (-not $registered) {
+            $script:ContentHubPackageUnverified[$status.Name] = 'Expected installed package ID/version was not confirmed after deployment.'
+            Save-ContentHubPackageDiagnostic $status.CatalogEntry @{ State = 'Missing'; Detail = $script:ContentHubPackageUnverified[$status.Name]; Missing = @('contentPackages: expected package ID/version was not returned'); Artifacts = @() } $status.InstalledVersion
+            continue
+        }
+        $presence = Test-ContentHubPackagePresence $status.CatalogEntry
+        if ($presence.State -eq 'Missing' -and $status.Action -ne 'None') {
+            for ($attempt = 0; $attempt -lt 2 -and $presence.State -eq 'Missing'; $attempt++) {
+                Start-Sleep -Seconds 5; $script:ContentHubPresenceInventory = @{}
+                $presence = Test-ContentHubPackagePresence $status.CatalogEntry
+            }
+        }
+        $status.Presence = $presence
+        Save-ContentHubPackageDiagnostic $status.CatalogEntry $presence $version
+        if ($presence.State -eq 'Missing') { $script:ContentHubPackageUnverified[$status.Name] = $presence.Detail }
+        elseif ($presence.State -eq 'Unverified') {
+            $presence.State = 'NotFullyInspected'
+            Write-PipelineMessage "$($status.Name): installed package version verified$(if ($status.Action -ne 'None') { ' after successful ARM deployment' }); detailed local manifest inspection is partial. Runtime content checks follow." -Level Info
+            Write-Verbose $presence.Detail
+        } else { Write-PipelineMessage "$($status.Name): installed version and supported package artifact checks verified." -Level Info }
+    }
+}
+
+function Resolve-ContentHubManifestValue($Value, $Template, [int]$Depth = 0, [switch]$Expression, [switch]$ScopeOnly) {
+    if ($Depth -gt 24) { throw 'Cyclic or excessively nested manifest expression.' }
+    if ($Value -isnot [string]) { return $Value }
+    $text = $Value.Trim()
+    if (-not $Expression) {
+        if (-not $text.StartsWith('[')) { return $Value }
+        if (-not $text.EndsWith(']')) { throw 'Invalid manifest expression.' }
+        $text = $text.Substring(1, $text.Length - 2).Trim()
+    }
+    if ($text -match "^'((?:[^']|'')*)'$") { return $matches[1].Replace("''", "'") }
+    if ($text -match "^variables\('([^']+)'\)((?:\.[A-Za-z0-9_]+)*)$") {
+        $value = Get-ContentHubField (Get-ContentHubField $Template 'variables') $matches[1]
+        foreach ($member in @($matches[2].TrimStart('.') -split '\.' | Where-Object { $_ })) { $value = Get-ContentHubField $value $member }
+        if ($null -eq $value) { throw 'Unknown manifest variable/member.' }
+        return Resolve-ContentHubManifestValue $value $Template ($Depth + 1) -ScopeOnly:$ScopeOnly
+    }
+    if ($text -match "^parameters\('(workspace|workspace-location)'\)$") {
+        if ($matches[1] -eq 'workspace') { return $Workspace }
+        return $Region
+    }
+    if ($text -notmatch '(?s)^(concat|resourceId|extensionResourceId|split|last|uniqueString)\((.*)\)$') { throw "Unsupported manifest identity expression: $text" }
+    $operation = $matches[1]; $arguments = $matches[2]
+    $parts = [Collections.Generic.List[string]]::new()
+    $quoted = $false; $level = 0; $start = 0
+    for ($i = 0; $i -lt $arguments.Length; $i++) {
+        $char = $arguments[$i]
+        if ($char -eq "'") {
+            if ($quoted -and $i + 1 -lt $arguments.Length -and $arguments[$i + 1] -eq "'") { $i++; continue }
+            $quoted = -not $quoted
+        } elseif (-not $quoted) {
+            if ($char -eq '(') { $level++ }
+            elseif ($char -eq ')') { $level-- }
+            elseif ($char -eq ',' -and $level -eq 0) { $parts.Add($arguments.Substring($start, $i - $start).Trim()); $start = $i + 1 }
+        }
+    }
+    if ($quoted -or $level -ne 0) { throw 'Invalid manifest arguments.' }
+    $parts.Add($arguments.Substring($start).Trim())
+    $values = @(foreach ($part in $parts) {
+        $resolved = Resolve-ContentHubManifestValue $part $Template ($Depth + 1) -Expression -ScopeOnly:$ScopeOnly
+        ,$resolved
+    })
+    switch ($operation) {
+        'concat' { return ($values -join '') }
+        'split' { if ($values.Count -ne 2) { throw 'Invalid split arguments.' }; return ,([string]$values[0]).Split([string]$values[1]) }
+        'last' { return @($values[0])[-1] }
+        'uniqueString' {
+            # Only establish the workspace prefix, never invent an ARM resource name.
+            if (-not $ScopeOnly) { throw 'Dynamic resource identity requires review.' }
+            return '__dynamic_suffix__'
+        }
+        'resourceId' {
+            $types = ([string]$values[0]).Split('/')
+            if ($types.Count -ne $values.Count -or $types[0] -notmatch '^Microsoft\.') { throw 'Unsupported resourceId overload.' }
+            $id = "/subscriptions/$script:SubscriptionId/resourceGroups/$ResourceGroup/providers/$($types[0])"
+            for ($i = 1; $i -lt $types.Count; $i++) { $id += "/$($types[$i])/$($values[$i])" }
+            return $id
+        }
+        'extensionResourceId' {
+            if ($values.Count -ne 3) { throw 'Unsupported extensionResourceId overload.' }
+            return "$($values[0])/providers/$($values[1])/$($values[2])"
+        }
+    }
+}
+
+function Get-ContentHubPresenceInventory([string]$Collection) {
+    if (-not (Get-Variable ContentHubPresenceInventory -Scope Script -ErrorAction SilentlyContinue)) { $script:ContentHubPresenceInventory = @{} }
+    $key = "$($script:BaseUri)|$Collection"
+    if (-not $script:ContentHubPresenceInventory.ContainsKey($key)) {
+        $root = if ($Collection -eq 'savedSearches') { $script:BaseUri } else { "$script:BaseUri/providers/Microsoft.SecurityInsights" }
+        $version = if ($Collection -eq 'savedSearches') { '2020-08-01' } else { $script:SentinelApiVersion }
+        $uri = "$root/$Collection`?api-version=$version"
+        if ($Collection -eq 'contentTemplates') { $uri += '&$expand=properties/mainTemplate' }
+        $page = Invoke-SentinelApi -Uri $uri -Method GET -Headers @{}
+        if (-not $page -or -not $page.PSObject.Properties['value'] -or $page.value -isnot [array]) { throw 'Incomplete package artifact inventory.' }
+        foreach ($item in $page.value) {
+            if (-not (Get-ContentHubField $item 'id') -or -not ([string]$item.id).StartsWith("$(([uri]$root).AbsolutePath)/$Collection/", [StringComparison]::OrdinalIgnoreCase)) {
+                throw 'Artifact inventory returned a resource outside the selected workspace/collection.'
+            }
+        }
+        $script:ContentHubPresenceInventory[$key] = @($page.value)
+    }
+    return @($script:ContentHubPresenceInventory[$key])
+}
+
+function Get-ContentHubArtifactIdentity($Resource) {
+    $p = Get-ContentHubField $Resource 'properties'
+    [pscustomobject]@{
+        ResourceId = [string](Get-ContentHubField $Resource 'id')
+        ResourceName = [string](Get-ContentHubField $Resource 'name')
+        ResourceKind = [string](Get-ContentHubField $Resource 'kind')
+        ContentId = [string](Get-ContentHubField $p 'contentId')
+        ContentProductId = [string](Get-ContentHubField $p 'contentProductId')
+        PackageId = [string](Get-ContentHubField $p 'packageId')
+        Kind = [string](Get-ContentHubField $p 'contentKind')
+        MetadataKind = [string](Get-ContentHubField $p 'kind')
+        Version = [string](Get-ContentHubField $p 'version')
+        ParentId = [string](Get-ContentHubField $p 'parentId')
+        SourceId = [string](Get-ContentHubField (Get-ContentHubField $p 'source') 'sourceId')
+        HasMainTemplate = $null -ne (Get-ContentHubField $p 'mainTemplate')
+    }
+}
+
+function Save-ContentHubPackageDiagnostic($CatalogEntry, $Presence, [string]$InstalledVersion = '') {
+    if (-not (Get-Variable ContentHubPackageDiagnostics -Scope Script -ErrorAction SilentlyContinue)) { $script:ContentHubPackageDiagnostics = @{} }
+    $key = [string]$CatalogEntry.name
+    $script:ContentHubPackageDiagnostics[$key] = [pscustomobject]@{
+        Solution = [string](Get-ContentHubField $CatalogEntry.properties 'displayName')
+        PackageId = [string](Get-ContentHubField $CatalogEntry.properties 'contentId')
+        WorkspaceResourceId = ([uri]$script:BaseUri).AbsolutePath
+        InstalledVersion = $InstalledVersion
+        CatalogVersion = [string](Get-ContentHubField $CatalogEntry.properties 'version')
+        State = $Presence.State
+        Detail = $Presence.Detail
+        Expected = Get-ContentHubField $Presence 'Expected'
+        Missing = @((Get-ContentHubField $Presence 'Missing') | Where-Object { $_ })
+        Artifacts = @((Get-ContentHubField $Presence 'Artifacts') | Where-Object { $_ })
+        CheckedAt = [DateTime]::UtcNow.ToString('o')
+    }
+}
+
+function Read-ContentHubArtifact([string]$Id, [string]$Collection, [string]$ManifestApiVersion, $Evidence) {
+    $workspaceId = ([uri]$script:BaseUri).AbsolutePath.TrimEnd('/')
+    $root = if ($Collection -eq 'savedSearches') { $workspaceId } else { "$workspaceId/providers/Microsoft.SecurityInsights" }
+    if (-not $Id.StartsWith("$root/$Collection/", [StringComparison]::OrdinalIgnoreCase) -or $Id -match '[?#]') { throw 'Artifact detail read is outside the selected workspace/collection.' }
+    $version = if ($Collection -eq 'savedSearches') { '2020-08-01' } else { $script:SentinelApiVersion }
+    # Packaged StaticUI connectors can reject the general Sentinel API even
+    # though GET succeeds with the version declared by their ARM resource.
+    $versions = @(if ($ManifestApiVersion -match '^\d{4}-\d{2}-\d{2}(-preview)?$') {
+        $ManifestApiVersion
+    } else { $version })
+    if ($version -notin $versions) { $versions += $version }
+    foreach ($api in $versions) {
+        try {
+            $body = Invoke-SentinelApi -Uri "$script:ServerUrl$Id`?api-version=$api" -Method GET -Headers @{} -AllowMissingContentArtifact
+            $Evidence.Reads += [pscustomobject]@{ ResourceId = $Id; ApiVersion = $api; Result = $(if ($body) { 'Found' } else { 'HTTP404' }); HttpStatus = $(if ($body) { 200 } else { 404 }) }
+            if ($body) {
+                if ((Get-ContentHubField $body 'id') -ne $Id) { throw 'Artifact detail read returned a different resource identity.' }
+                return $body
+            }
+        } catch {
+            $Evidence.Outcome = 'ReadFailed'
+            $Evidence.Reason = 'Detail GET failed; absence was not established. Check permissions, API support and the exact resource ID.'
+            $Evidence.Reads += [pscustomobject]@{ ResourceId = $Id; ApiVersion = $api; Result = 'ReadFailed'; HttpStatus = $_.Exception.Data['ArmStatusCode'] }
+            throw
+        }
+    }
+    return $null
+}
+
+function ConvertTo-ContentHubSharedValue($Value, $Template, [switch]$Resolve, [int]$Depth = 0) {
+    if ($Depth -gt 100) { throw 'Shared template comparison depth exceeded.' }
+    if ($Value -is [string]) {
+        if (-not $Resolve) { return $Value }
+        # ARM evaluates the outer package once; doubled brackets are deferred
+        # expressions in the inert template, not expressions to execute here.
+        if ($Value.StartsWith('[[')) { return $Value.Substring(1) }
+        if ($Value -match "^\[parameters\('(workbook\d+-name)'\)\]$") {
+            $parameter = Get-ContentHubField (Get-ContentHubField $Template 'parameters') $matches[1]
+            $default = Get-ContentHubField $parameter 'defaultValue'
+            if ((Get-ContentHubField $parameter 'type') -ne 'string' -or $default -isnot [string] -or $default.StartsWith('[')) { throw 'Workbook name default is not a literal string.' }
+            $Value = $default
+        } else { $Value = Resolve-ContentHubManifestValue $Value $Template }
+        if ($Value -is [string]) { return $Value }
+    }
+    if ($Value -is [Collections.IDictionary] -or $Value -is [pscustomobject]) {
+        $keys = [string[]]@(if ($Value -is [Collections.IDictionary]) { @($Value.Keys) } else { $Value.PSObject.Properties | ForEach-Object Name })
+        [Array]::Sort($keys, [StringComparer]::Ordinal)
+        $copy = [ordered]@{}
+        foreach ($key in $keys) { $copy[$key] = ConvertTo-ContentHubSharedValue (Get-ContentHubField $Value $key) $Template -Resolve:$Resolve -Depth ($Depth + 1) }
+        return $copy
+    }
+    if ($Value -is [array]) {
+        return ,@($Value | ForEach-Object { ConvertTo-ContentHubSharedValue $_ $Template -Resolve:$Resolve -Depth ($Depth + 1) })
+    }
+    return $Value
+}
+
+function Test-ContentHubSharedTemplate($Descriptor, $Template, $Registration, [string]$PackageId, $Related, $Evidence) {
+    # Reviewed Azure/Azure-Sentinel Solutions/{SOC Handbook,SentinelSOARessentials,
+    # Threat Intelligence (NEW),Threat Intelligence}/Package/mainTemplate.json:
+    # these pairs declare the same workspace/content-derived template name.
+    # Do not generalize this exception to arbitrary packages or display titles.
+    $owner = ''
+    if ($PackageId -eq 'microsoftsentinelcommunity.azure-sentinel-solution-sochandbook' -and
+        $Descriptor.Kind -eq 'Workbook' -and $Descriptor.ContentId -eq 'SecurityOperationsEfficiency' -and $Descriptor.Version -ceq '1.5.2') {
+        $owner = 'azuresentinel.azure-sentinel-solution-sentinelsoaressentials'
+    } elseif ($PackageId -eq 'azuresentinel.azure-sentinel-solution-threatintelligence-updated' -and
+        $Descriptor.Kind -eq 'DataConnector' -and $Descriptor.Version -ceq '1.0.0' -and
+        $Descriptor.ContentId -in @('ThreatIntelligenceTaxii', 'ThreatIntelligence', 'ThreatIntelligenceUploadIndicatorsAPI', 'MicrosoftDefenderThreatIntelligence')) {
+        $owner = 'azuresentinel.azure-sentinel-solution-threatintelligence-taxii'
+    }
+    $Evidence.Outcome = 'IdentityConflict'
+    $Evidence.Reason = 'A different package owns related content; no supported shared equivalence was established. Preserve it for review, not reinstallation.'
+    if (-not $owner) { return }
+    $declared = @()
+    try {
+        foreach ($registrationResource in $Registration) {
+            $dependencies = Get-ContentHubField $registrationResource.properties 'dependencies'
+            if ((Get-ContentHubField $dependencies 'operator') -ne 'AND') { continue }
+            $declared += @(Get-ContentHubField $dependencies 'criteria' | Where-Object {
+                (Resolve-ContentHubManifestValue (Get-ContentHubField $_ 'contentId') $Template) -eq $Descriptor.ContentId -and
+                (Resolve-ContentHubManifestValue (Get-ContentHubField $_ 'kind') $Template) -eq $Descriptor.Kind -and
+                (Resolve-ContentHubManifestValue (Get-ContentHubField $_ 'version') $Template) -ceq $Descriptor.Version
+            })
+        }
+    } catch {
+        $Evidence.Outcome = 'Unverifiable'; $Evidence.Reason = 'Shared dependency declaration could not be resolved.'
+        return
+    }
+    if (-not $declared.Count) { return }
+    $candidates = @($Related | Where-Object {
+        (Get-ContentHubField $_.properties 'packageId') -eq $owner -and
+        (Get-ContentHubField $_.properties 'contentId') -eq $Descriptor.ContentId -and
+        (Get-ContentHubField $_.properties 'contentKind') -eq $Descriptor.Kind -and
+        ((Get-ContentHubField $_.properties 'version') -ceq $Descriptor.Version -or -not (Get-ContentHubField $_.properties 'version'))
+    })
+    if ($candidates.Count -ne 1) { return }
+    $candidate = $candidates[0]
+    if (-not (Get-ContentHubField $candidate.properties 'mainTemplate') -or -not (Get-ContentHubField $candidate.properties 'version')) {
+        $candidate = Read-ContentHubArtifact ([string]$candidate.id) 'contentTemplates' $Evidence.ManifestApiVersion $Evidence
+        if (-not $candidate) {
+            $Evidence.Outcome = 'Unverifiable'; $Evidence.Reason = 'Shared candidate detail is unavailable; do not infer absence from a stale collection.'
+            return
+        }
+    }
+    $Evidence.Observed = @(Get-ContentHubArtifactIdentity $candidate)
+    $p = $candidate.properties
+    if ((Get-ContentHubField $p 'packageId') -ne $owner -or (Get-ContentHubField $p 'contentId') -ne $Descriptor.ContentId -or
+        (Get-ContentHubField $p 'contentKind') -ne $Descriptor.Kind -or (Get-ContentHubField $p 'version') -cne $Descriptor.Version) { return }
+    $equivalence = 'equivalent inert template payload'
+    try {
+        $expected = ConvertTo-ContentHubSharedValue (Get-ContentHubField $Descriptor.Resource.properties 'mainTemplate') $Template -Resolve
+        $actual = ConvertTo-ContentHubSharedValue (Get-ContentHubField $p 'mainTemplate') $null
+        if (-not $expected -or -not $actual -or -not $expected['resources'] -or -not $actual['resources']) {
+            $Evidence.Outcome = 'Unverifiable'; $Evidence.Reason = 'Shared template payload is unavailable or empty; equivalence is unproved.'
+            return
+        }
+        foreach ($body in @($expected, $actual)) {
+            $metadata = @($body['resources'] | Where-Object { $_['type'] -eq 'Microsoft.OperationalInsights/workspaces/providers/metadata' })
+            if ($metadata.Count -ne 1) { throw 'Shared template metadata contract is unsupported.' }
+            $m = $metadata[0]['properties']
+            $expectedOwner = if ([object]::ReferenceEquals($body, $expected)) { $PackageId } else { $owner }
+            if ($m['contentId'] -ne $Descriptor.ContentId -or $m['kind'] -ne $Descriptor.Kind -or
+                $m['version'] -cne $Descriptor.Version -or $m['source']['kind'] -ne 'Solution' -or $m['source']['sourceId'] -ne $expectedOwner) {
+                $Evidence.Reason = 'Shared template nested metadata identity/provenance conflicts with the declared dependency.'
+                return
+            }
+            # Only package-attribution fields differ in the supported shared
+            # contract. Keep parent, content identity, dependencies and all payload.
+            foreach ($field in @('source', 'author', 'support', 'description')) { $m.Remove($field) }
+        }
+        if ((ConvertTo-Json $expected -Depth 100 -Compress) -cne (ConvertTo-Json $actual -Depth 100 -Compress)) {
+            # Published packages reuse canonical identities even where their
+            # same-version bodies differ. Accept only these reviewed payload
+            # pairs, not a generic foreign-owner or same-name exception.
+            # SOC 3.0.6: bd1ac187b9ca3f0e858f4310a22a5899858b3316
+            # Other packages: 08eb9e62835b6fe87e0e6b33a4f68f445f77cca0
+            # Both refs are in Azure/Azure-Sentinel; paths are listed above.
+            $publishedPairs = @{
+                SecurityOperationsEfficiency = @('049FECADCC43D40088848C76D62A760223EF0E4965AA3425A928469D936018A1', '585A9ED1438224C4A70BC29556C78B6E3B3C6CD84A721F8391C4A9FBF9C55B6B')
+                ThreatIntelligenceTaxii = @('7758F6B851F7100C3CC42744EDF17997CF3A887E77C772A5DE1D89433F6F2175', '917493EB1CB737E114B002E0A8E3BA1F76872B8552BFB3E105F0910EF74AFCB7')
+                ThreatIntelligence = @('2361A5B8B6B05177B904D89B62F6346F8F5D0B66EEAF4F95BD92C6250F6F5D94', '30260BB21FA4026BC22671B99CB624FD7E52AAD329908616331134E1E2F95235')
+                ThreatIntelligenceUploadIndicatorsAPI = @('1E3F87C65B95B9B097CA1F1FDF32695A2BB2DD2F844658C6CA74AF5927B4B690', '2B6323648408FDAC893F2178C4AB4822FAB4A70B79107E94008F6E16B5592A78')
+                MicrosoftDefenderThreatIntelligence = @('73223F80C3EB0E7D765742C0FE7DBEE99FE6828CBF3D8B67C888C4A192820AFF', 'A96B44C1A0DC97945424F691E2AF576019823ED7C4196578D3C444692D8DF6D4')
+            }
+            $field = if ($Descriptor.Kind -eq 'Workbook') { 'serializedData' } else { 'connectorUiConfig' }
+            $bodies = @($expected, $actual)
+            $hashes = @()
+            for ($index = 0; $index -lt 2; $index++) {
+                $payload = $bodies[$index]['resources'][0]['properties'][$field]
+                $bytes = [Text.Encoding]::UTF8.GetBytes((ConvertTo-Json $payload -Depth 100 -Compress))
+                $sha = [Security.Cryptography.SHA256]::Create()
+                try { $hash = ([BitConverter]::ToString($sha.ComputeHash($bytes))).Replace('-', '') } finally { $sha.Dispose() }
+                if ($hash -cne $publishedPairs[$Descriptor.ContentId][$index]) {
+                    $Evidence.Reason = 'Shared payload is neither equivalent nor an exact reviewed published variant; preserve for review.'
+                    return
+                }
+                $hashes += $hash
+                $bodies[$index]['resources'][0]['properties'].Remove($field)
+            }
+            if ((ConvertTo-Json $expected -Depth 100 -Compress) -cne (ConvertTo-Json $actual -Depth 100 -Compress)) {
+                $Evidence.Reason = 'Shared template envelope differs beyond reviewed attribution/payload variants; preserve for review.'
+                return
+            }
+            $equivalence = "reviewed canonical shared artifact with different published payload variants (expected SHA256=$($hashes[0]); owner SHA256=$($hashes[1])); remaining template envelope equivalent"
+        }
+    } catch {
+        $Evidence.Outcome = 'Unverifiable'; $Evidence.Reason = 'Shared template expressions/schema could not be compared safely; no repair is authorized.'
+        return
+    }
+    $Evidence.Outcome = 'SharedPresent'
+    $Evidence.Reason = "Exact declared contentId/kind/version; $equivalence; reviewed shared owner $owner. Nested Solution provenance verified. Runtime configuration/ingestion is not proved."
+}
+
+function Test-ContentHubPackagePresence($CatalogEntry, $InlineTemplate = $null, [int]$Depth = 0) {
+    $uri = "$script:BaseUri/providers/Microsoft.SecurityInsights/contentProductPackages/$([uri]::EscapeDataString($CatalogEntry.name))?api-version=$script:SentinelApiVersion"
+    $result = @{ State = 'Unverified'; Detail = 'No readable owned-artifact manifest; package registration alone is not installation proof.'; Expected = 0; Missing = @(); RepairTemplate = $null; Artifacts = @() }
+    # Read failures escape, rather than becoming absence or permission to deploy.
+    if ($null -eq $InlineTemplate) {
+        try { $detail = Invoke-SentinelApi -Uri $uri -Method GET -Headers @{} }
+        catch {
+            $result.State = 'ReadFailed'; $result.Detail = "Product manifest GET failed: $(([uri]$uri).AbsolutePath). No absence or installation completeness was inferred."
+            Save-ContentHubPackageDiagnostic $CatalogEntry $result
+            throw
+        }
+        $template = Get-ContentHubField (Get-ContentHubField $detail 'properties') 'packagedContent'
+    } else { $template = $InlineTemplate }
+    if ($Depth -gt 16) { $result.Detail = 'Nested manifest inspection depth exceeded.'; return $result }
+    if (-not $template -or -not $template.PSObject.Properties['resources'] -or $template.resources -isnot [array]) { return $result }
+    $nested = @($template.resources | Where-Object { (Get-ContentHubField $_ 'type') -eq 'Microsoft.Resources/deployments' })
+    if ($nested.Count) {
+        # Inline deployments are normal Content Hub packaging, not missing content
+        # or a reason to prevent ARM installing/upgrading the official package.
+        $outer = $template | ConvertTo-Json -Depth 100 | ConvertFrom-Json -Depth 100
+        $outer.resources = @($outer.resources | Where-Object type -ne 'Microsoft.Resources/deployments')
+        $parts = [Collections.Generic.List[object]]::new()
+        $parts.Add((Test-ContentHubPackagePresence $CatalogEntry $outer ($Depth + 1)))
+        $repairResources = [Collections.Generic.List[object]]::new()
+        if ($parts[0].RepairTemplate) { foreach ($r in $parts[0].RepairTemplate.resources) { $repairResources.Add($r) } }
+        foreach ($deployment in $nested) {
+            $p = $deployment.properties
+            if ((Get-ContentHubField $p 'templateLink') -or (Get-ContentHubField $deployment 'copy') -or
+                $null -ne (Get-ContentHubField $deployment 'condition') -or
+                (Get-ContentHubField $deployment 'subscriptionId') -or (Get-ContentHubField $deployment 'resourceGroup') -or
+                (Get-ContentHubField $deployment 'scope')) {
+                $parts.Add(@{ State = 'Unverified'; Expected = 0; Missing = @(); Detail = 'Nested deployment uses a scoped, linked or conditional manifest; ARM deployment is verified separately.'; RepairTemplate = $null })
+                continue
+            }
+            $childTemplate = Get-ContentHubField $p 'template'
+            if (-not $childTemplate -or $childTemplate -is [string]) {
+                $parts.Add(@{ State = 'Unverified'; Expected = 0; Missing = @(); Detail = 'Inline template is unavailable for local inspection.'; RepairTemplate = $null })
+                continue
+            }
+            $child = Test-ContentHubPackagePresence $CatalogEntry $childTemplate ($Depth + 1)
+            $parts.Add($child)
+            if ($child.RepairTemplate) {
+                $repairDeployment = $deployment | ConvertTo-Json -Depth 100 | ConvertFrom-Json -Depth 100
+                $repairDeployment.properties.template = $child.RepairTemplate
+                $repairResources.Add($repairDeployment)
+            }
+        }
+        $result.Expected = ($parts | Measure-Object Expected -Sum).Sum
+        $result.Missing = @($parts | ForEach-Object { $_.Missing })
+        $result.Artifacts = @($parts | ForEach-Object { Get-ContentHubField $_ 'Artifacts' })
+        $result.State = if ($result.Missing.Count) { 'Missing' } elseif (@($parts | Where-Object State -eq 'Unverified').Count) { 'Unverified' } else { 'Verified' }
+        $result.Detail = "Inline deployment inspection: $($result.Expected) expected artifacts; $($result.Missing.Count) missing/outdated. " +
+            (@($result.Missing | Select-Object -First 3) -join '; ') + ' ' +
+            (@($parts | Where-Object State -eq 'Unverified' | ForEach-Object Detail) -join '; ')
+        if (@($parts | Where-Object { -not $_.RepairTemplate }).Count -eq 0) {
+            $repair = $template | ConvertTo-Json -Depth 100 | ConvertFrom-Json -Depth 100
+            $repair.resources = @($repairResources)
+            $result.RepairTemplate = $repair
+        }
+        Save-ContentHubPackageDiagnostic $CatalogEntry $result
+        return $result
+    }
+    $packageId = [string](Get-ContentHubField $CatalogEntry.properties 'contentId')
+    if (-not $packageId) { $packageId = [string]$CatalogEntry.name }
+    $workspaceId = ([uri]$script:BaseUri).AbsolutePath.TrimEnd('/')
+    $descriptors = [Collections.Generic.List[object]]::new()
+    $registration = @()
+    try {
+        foreach ($resource in $template.resources) {
+            if ((Get-ContentHubField $resource 'condition') -eq $false) { continue }
+            if ($null -ne (Get-ContentHubField $resource 'condition') -or (Get-ContentHubField $resource 'copy')) { throw 'Conditional/copied package resources require review.' }
+            $type = [string](Get-ContentHubField $resource 'type')
+            $collection = ($type -split '/')[-1]
+            if ($collection -notin @('contentTemplates', 'contentPackages', 'metadata', 'dataConnectors', 'dataConnectorDefinitions', 'savedSearches')) {
+                throw "Package artifact contract not verified: $type. No forced reinstallation."
+            }
+            $scopeName = [string](Resolve-ContentHubManifestValue (Get-ContentHubField $resource 'name') $template -ScopeOnly)
+            if ($type -like 'Microsoft.OperationalInsights/workspaces/providers/*') {
+                if (-not $scopeName.StartsWith("$Workspace/Microsoft.SecurityInsights/", [StringComparison]::OrdinalIgnoreCase)) { throw 'Package resource targets a different workspace.' }
+            } elseif ($type -eq 'Microsoft.OperationalInsights/workspaces/savedSearches') {
+                if (-not $scopeName.StartsWith("$Workspace/", [StringComparison]::OrdinalIgnoreCase)) { throw 'Saved search targets a different workspace.' }
+            } elseif ($type -like 'Microsoft.SecurityInsights/*') {
+                if ((Resolve-ContentHubManifestValue (Get-ContentHubField $resource 'scope') $template) -ne $workspaceId) { throw 'Extension resource workspace scope is unverified.' }
+            } else { throw 'Unexpected package resource type.' }
+            if ($collection -eq 'contentPackages') {
+                $registrationId = Resolve-ContentHubManifestValue (Get-ContentHubField $resource.properties 'contentId') $template
+                if ($registrationId -ne $packageId) { throw 'Manifest registration belongs to a different package.' }
+                $registration += $resource
+                continue
+            }
+            $properties = Get-ContentHubField $resource 'properties'
+            $descriptor = @{ Resource = $resource; Collection = $collection; Id = ''; ReadId = ''; ParentId = ''; ContentId = ''; Kind = ''; Version = ''; Missing = $false }
+            if ($collection -in @('contentTemplates', 'metadata')) {
+                $descriptor.ContentId = [string](Resolve-ContentHubManifestValue (Get-ContentHubField $properties 'contentId') $template)
+                $kindField = if ($collection -eq 'metadata') { 'kind' } else { 'contentKind' }
+                $descriptor.Kind = [string](Resolve-ContentHubManifestValue (Get-ContentHubField $properties $kindField) $template)
+                $descriptor.Version = [string](Resolve-ContentHubManifestValue (Get-ContentHubField $properties 'version') $template)
+                $owner = if ($collection -eq 'metadata') { Get-ContentHubField (Get-ContentHubField $properties 'source') 'sourceId' } else { Get-ContentHubField $properties 'packageId' }
+                if ((Resolve-ContentHubManifestValue $owner $template) -ne $packageId -or -not $descriptor.ContentId -or -not $descriptor.Kind) { throw 'Package artifact ownership/identity is unverified.' }
+                if ($collection -eq 'metadata') {
+                    $leaf = ([string](Resolve-ContentHubManifestValue $resource.name $template) -split '/')[-1]
+                    $descriptor.ReadId = "$workspaceId/providers/Microsoft.SecurityInsights/metadata/$leaf"
+                    $descriptor.ParentId = [string](Resolve-ContentHubManifestValue (Get-ContentHubField $properties 'parentId') $template)
+                }
+            } else {
+                $resolvedName = [string](Resolve-ContentHubManifestValue (Get-ContentHubField $resource 'name') $template)
+                $leaf = ($resolvedName -split '/')[-1]
+                if (-not $leaf) { throw 'Empty package artifact identity.' }
+                $root = if ($collection -eq 'savedSearches') { $workspaceId } else { "$workspaceId/providers/Microsoft.SecurityInsights" }
+                $descriptor.Id = "$root/$collection/$leaf"
+                $descriptor.ReadId = $descriptor.Id
+            }
+            $descriptors.Add($descriptor)
+        }
+    } catch {
+        $result.Detail = "Manifest requires review: $($_.Exception.Message)"
+        return $result
+    }
+    $result.Expected = $descriptors.Count
+    $existingIds = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+    foreach ($descriptor in $descriptors) {
+        $evidence = [ordered]@{
+            Collection = $descriptor.Collection; ExpectedResourceId = $descriptor.ReadId
+            ExpectedContentId = $descriptor.ContentId; ExpectedKind = $descriptor.Kind
+            ExpectedVersion = $descriptor.Version; ExpectedPackageId = $packageId
+            ExpectedParentId = $descriptor.ParentId; ManifestApiVersion = [string](Get-ContentHubField $descriptor.Resource 'apiVersion')
+            Role = $(if ($descriptor.Collection -eq 'contentTemplates') { 'Inert packaged template (required even when runtime NRT/Playbook is excluded)' } else { 'Declared packaged artifact' })
+            Outcome = 'Present'; Reason = ''; Observed = @(); Reads = @()
+        }
+        $result.Artifacts += [pscustomobject]$evidence
+        $evidence = $result.Artifacts[-1]
+        try { $inventory = @(Get-ContentHubPresenceInventory $descriptor.Collection) }
+        catch {
+            $evidence.Outcome = 'ReadFailed'; $evidence.Reason = 'Collection read failed; missing content cannot be inferred.'
+            $result.Detail = "$($descriptor.Collection) inventory failed."
+            Save-ContentHubPackageDiagnostic $CatalogEntry $result
+            throw
+        }
+        foreach ($item in $inventory) { [void]$existingIds.Add([string]$item.id) }
+        $related = @($inventory | Where-Object {
+            ($descriptor.ReadId -and $_.id -eq $descriptor.ReadId) -or
+            ($descriptor.ContentId -and (Get-ContentHubField $_.properties 'contentId') -eq $descriptor.ContentId)
+        })
+        $evidence.Observed = @($related | Select-Object -First 5 | ForEach-Object { Get-ContentHubArtifactIdentity $_ })
+        $matching = @($inventory | Where-Object {
+            if ($descriptor.Id) { return $_.id -eq $descriptor.Id }
+            $p = $_.properties
+            $owner = if ($descriptor.Collection -eq 'metadata') { Get-ContentHubField (Get-ContentHubField $p 'source') 'sourceId' } else { Get-ContentHubField $p 'packageId' }
+            $kind = if ($descriptor.Collection -eq 'metadata') { Get-ContentHubField $p 'kind' } else { Get-ContentHubField $p 'contentKind' }
+            if ($descriptor.Collection -eq 'metadata' -and $descriptor.ParentId) {
+                return (Get-ContentHubField $p 'parentId') -eq $descriptor.ParentId -and
+                    $kind -eq $descriptor.Kind -and (Get-ContentHubField $p 'contentId') -eq $descriptor.ContentId
+            }
+            $owner -eq $packageId -and $kind -eq $descriptor.Kind -and (Get-ContentHubField $p 'contentId') -eq $descriptor.ContentId
+        })
+        if (-not $matching.Count -and $descriptor.Collection -eq 'contentTemplates' -and $related.Count) {
+            try { Test-ContentHubSharedTemplate $descriptor $template $registration $packageId $related $evidence }
+            catch { Save-ContentHubPackageDiagnostic $CatalogEntry $result; throw }
+            continue
+        }
+        if ($matching.Count -gt 1) {
+            if ($descriptor.Collection -ne 'contentTemplates') { $result.Detail = "Ambiguous installed artifact: $($descriptor.Collection)/$($descriptor.ContentId)."; return $result }
+            # Content Hub retains inert template versions side by side; any intact
+            # owned version at least as new as the manifest satisfies presence.
+            $usable = @($matching | Where-Object {
+                $comparison = Compare-ContentHubArtifactVersion ([string](Get-ContentHubField $_.properties 'version')) $descriptor.Version
+                $body = Get-ContentHubField $_.properties 'mainTemplate'
+                $expectedBody = Get-ContentHubField $descriptor.Resource.properties 'mainTemplate'
+                $null -ne $comparison -and $comparison -ge 0 -and
+                    (-not $expectedBody -or ($body -and (-not (Get-ContentHubField $expectedBody 'resources') -or (Get-ContentHubField $body 'resources'))))
+            })
+            if (-not $usable.Count) {
+                $resolved = [Collections.Generic.List[object]]::new()
+                foreach ($candidate in $matching) {
+                    $comparison = Compare-ContentHubArtifactVersion ([string](Get-ContentHubField $candidate.properties 'version')) $descriptor.Version
+                    $expectedBody = Get-ContentHubField $descriptor.Resource.properties 'mainTemplate'
+                    if ($null -eq $comparison -or ($comparison -ge 0 -and $expectedBody -and -not (Get-ContentHubField $candidate.properties 'mainTemplate'))) {
+                        try { $candidate = Read-ContentHubArtifact ([string]$candidate.id) $descriptor.Collection $evidence.ManifestApiVersion $evidence }
+                        catch { Save-ContentHubPackageDiagnostic $CatalogEntry $result; throw }
+                    }
+                    if ($candidate) { $resolved.Add($candidate) }
+                }
+                $matching = @($resolved)
+                $evidence.Observed = @($matching | Select-Object -First 5 | ForEach-Object { Get-ContentHubArtifactIdentity $_ })
+                $usable = @($matching | Where-Object {
+                    $comparison = Compare-ContentHubArtifactVersion ([string](Get-ContentHubField $_.properties 'version')) $descriptor.Version
+                    $body = Get-ContentHubField $_.properties 'mainTemplate'
+                    $null -ne $comparison -and $comparison -ge 0 -and
+                        (-not $expectedBody -or ($body -and (-not (Get-ContentHubField $expectedBody 'resources') -or (Get-ContentHubField $body 'resources'))))
+                })
+                $uncertain = @($matching | Where-Object {
+                    $comparison = Compare-ContentHubArtifactVersion ([string](Get-ContentHubField $_.properties 'version')) $descriptor.Version
+                    $null -eq $comparison -or ($comparison -ge 0 -and $expectedBody -and -not (Get-ContentHubField $_.properties 'mainTemplate'))
+                })
+                if (-not $usable.Count -and $uncertain.Count) {
+                    $evidence.Outcome = 'Unverifiable'; $evidence.Reason = 'Retained template versions have incomplete detail projections; none can establish absence/outdated content.'
+                    continue
+                }
+            }
+            # Never let an older retained version win solely because it appeared
+            # first in a projected list response.
+            $matching = @(if ($usable.Count) { $usable[0] } elseif ($matching.Count) {
+                $newest = $matching[0]
+                foreach ($candidate in $matching) {
+                    if ((Compare-ContentHubArtifactVersion ([string](Get-ContentHubField $candidate.properties 'version')) ([string](Get-ContentHubField $newest.properties 'version'))) -gt 0) { $newest = $candidate }
+                }
+                $newest
+            })
+        }
+        $descriptor.Missing = $matching.Count -eq 0
+        # List responses are projections. A missing source/mainTemplate/version
+        # field is not proof of a missing resource. GET the actual ARM resource
+        # name, never contentId as a guessed contentTemplates resource name.
+        $readId = ''
+        if ($matching.Count -eq 0 -and $descriptor.ReadId) { $readId = $descriptor.ReadId }
+        elseif ($matching.Count -eq 1) {
+            $p = $matching[0].properties
+            if (($descriptor.Version -and -not (Get-ContentHubField $p 'version')) -or
+                ($descriptor.Collection -eq 'contentTemplates' -and (Get-ContentHubField $descriptor.Resource.properties 'mainTemplate') -and -not (Get-ContentHubField $p 'mainTemplate')) -or
+                ($descriptor.Collection -eq 'metadata' -and $descriptor.ParentId -and -not (Get-ContentHubField $p 'parentId'))) {
+                $readId = [string]$matching[0].id
+            }
+        }
+        if ($readId) {
+            try { $readback = Read-ContentHubArtifact $readId $descriptor.Collection $evidence.ManifestApiVersion $evidence }
+            catch { Save-ContentHubPackageDiagnostic $CatalogEntry $result; throw }
+            if ($readback) {
+                $matching = @($readback)
+                $evidence.Observed = @(Get-ContentHubArtifactIdentity $readback)
+                [void]$existingIds.Add([string]$readback.id)
+                $descriptor.Missing = $false
+                $evidence.Reason = 'Exact resource GET established presence; list projection was not absence.'
+            } else {
+                $matching = @(); $descriptor.Missing = $true
+                $evidence.Reason = 'Exact resource GET returned 404 with both current and manifest API versions (when different).'
+            }
+        }
+        if ($matching.Count -eq 1 -and $descriptor.Collection -eq 'metadata' -and $descriptor.ParentId) {
+            $p = $matching[0].properties
+            $actualParent = [string](Get-ContentHubField $p 'parentId')
+            if ($actualParent -and ($actualParent -ne $descriptor.ParentId -or
+                (Get-ContentHubField $p 'contentId') -ne $descriptor.ContentId -or
+                (Get-ContentHubField $p 'kind') -ne $descriptor.Kind)) {
+                $evidence.Outcome = 'IdentityConflict'; $evidence.Reason = 'Existing metadata has a different parent/content identity; preserved, not repaired.'
+                $result.Missing += "$($descriptor.ReadId): metadata identity conflict"
+                continue
+            }
+            if (-not $actualParent) {
+                $evidence.Outcome = 'Unverifiable'; $evidence.Reason = 'Metadata parentId is unavailable even after detail GET; no missing-resource or repair claim.'
+                continue
+            }
+            # source.sourceId is optional provenance, not an ARM resource key.
+            # Exact metadata ID + parentId + contentId + kind establish identity.
+            if ((Get-ContentHubField (Get-ContentHubField $p 'source') 'sourceId') -ne $packageId) {
+                $evidence.Reason = 'Exact metadata/parent/content identity matched; optional source provenance differs or is absent and is preserved.'
+            }
+        }
+        if ($matching.Count -eq 1 -and $descriptor.Version) {
+            $comparison = Compare-ContentHubArtifactVersion ([string](Get-ContentHubField $matching[0].properties 'version')) $descriptor.Version
+            if ($null -eq $comparison) {
+                $evidence.Outcome = 'Unverifiable'; $evidence.Reason = 'Resource exists but its version cannot be compared; not evidence of absence.'
+                continue
+            }
+            $descriptor.Missing = $comparison -lt 0
+            if ($descriptor.Missing) { $evidence.Outcome = 'Outdated'; $evidence.Reason = 'Observed resource version is older than the manifest artifact version (not packageVersion/contentSchemaVersion).' }
+            if ($descriptor.Missing -and $descriptor.Collection -eq 'metadata') {
+                $actualSource = Get-ContentHubField (Get-ContentHubField $matching[0].properties 'source') 'sourceId'
+                if ($actualSource -and $actualSource -ne $packageId) {
+                    $descriptor.Missing = $false
+                    $evidence.Outcome = 'IdentityConflict'; $evidence.Reason = 'Metadata version is older but source provenance changed; manual review required before any overwrite.'
+                    $result.Missing += "$($descriptor.ReadId): older metadata with changed source provenance"
+                    continue
+                }
+            }
+        }
+        if ($matching.Count -eq 1 -and $descriptor.Collection -eq 'contentTemplates') {
+            $expectedBody = Get-ContentHubField $descriptor.Resource.properties 'mainTemplate'
+            if ($expectedBody) {
+                $actualBody = Get-ContentHubField $matching[0].properties 'mainTemplate'
+                if (-not $actualBody) {
+                    $evidence.Outcome = 'Unverifiable'; $evidence.Reason = 'Template identity exists but mainTemplate is unavailable after detail GET. Projection is not proof that the stored template is missing.'
+                    continue
+                }
+                elseif ((Get-ContentHubField $expectedBody 'resources') -and -not (Get-ContentHubField $actualBody 'resources')) {
+                    $descriptor.Missing = $true
+                    $evidence.Outcome = 'Missing'; $evidence.Reason = 'Stored template body explicitly contains none of the expected resources.'
+                }
+            }
+        }
+        if ($descriptor.Missing) {
+            if ($evidence.Outcome -eq 'Present') {
+                $evidence.Outcome = 'Missing'
+                if (-not $evidence.Reason) { $evidence.Reason = $(if ($matching.Count) { 'Explicit template body contains none of the expected resources.' } else { 'Complete scoped collection contained no matching package/kind/content identity.' }) }
+            }
+            $result.Missing += "$($descriptor.Collection)/$(if ($descriptor.ReadId) { $descriptor.ReadId } else { $descriptor.ContentId }) v$($descriptor.Version): $($evidence.Reason)"
+        }
+    }
+    if (-not $result.Missing.Count) {
+        $sharedCount = @($result.Artifacts | Where-Object Outcome -eq 'SharedPresent').Count
+        $result.State = 'Verified'; $result.Detail = "Verified $($result.Expected) manifest artifacts; $sharedCount SharedPresent (not runtime rule/workbook or ingestion readiness)."
+    } else {
+        $result.State = 'Missing'; $result.Detail = "Missing/outdated manifest artifacts: $($result.Missing -join '; ')"
+    }
+    if (@($result.Artifacts | Where-Object Outcome -in @('Unverifiable', 'IdentityConflict')).Count) {
+        if (-not $result.Missing.Count) { $result.State = 'Unverified'; $result.Detail = 'Some existing artifact fields could not be verified; see exact artifact evidence.' }
+        Save-ContentHubPackageDiagnostic $CatalogEntry $result
+        return $result # Never construct a repair for uncertain ownership/version.
+    }
+    try {
+        # Repair only absent/outdated owned artifacts and the registration. Existing
+        # connector selections, parsers and saved searches are never replayed here.
+        $repair = $template | ConvertTo-Json -Depth 100 | ConvertFrom-Json -Depth 100
+        $selected = @($descriptors | Where-Object Missing | ForEach-Object Resource) + @($registration)
+        $newIds = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+        [void]$existingIds.Add($workspaceId)
+        foreach ($resource in $selected) {
+            $collection = ([string]$resource.type -split '/')[-1]
+            try { $leaf = ([string](Resolve-ContentHubManifestValue $resource.name $template) -split '/')[-1] }
+            catch { continue } # Dynamic names cannot authorize a dependency guess.
+            $root = if ($collection -eq 'savedSearches') { $workspaceId } else { "$workspaceId/providers/Microsoft.SecurityInsights" }
+            [void]$newIds.Add("$root/$collection/$leaf")
+        }
+        $repair.resources = @(foreach ($resource in $selected) {
+            if ($resource.PSObject.Properties['dependsOn']) {
+                $dependencies = @($resource.dependsOn | Where-Object {
+                    $id = Resolve-ContentHubManifestValue $_ $template
+                    if ($existingIds.Contains([string]$id)) { return $false }
+                    if (-not $newIds.Contains([string]$id)) { throw 'Package dependency is neither verified present nor included with an exact resource identity in this repair.' }
+                    return $true
+                })
+                $resource = $resource.PSObject.Copy()
+                $resource.dependsOn = $dependencies
+            }
+            # Serialization below makes the repair independent of the original manifest.
+            $resource
+        })
+        $result.RepairTemplate = $repair
+    } catch {
+        $result.Detail = "Missing/outdated artifacts: $($result.Missing.Count). Safe repair dependencies could not be established: $($_.Exception.Message)"
+    }
+    Save-ContentHubPackageDiagnostic $CatalogEntry $result
+    return $result
+}
+
+function Get-ContentHubStableId([string]$Kind, [string]$ContentId) {
+    $key = "$(([uri]$script:BaseUri).AbsolutePath.TrimEnd('/'))|$Kind|$ContentId".ToLowerInvariant()
+    $hash = [Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes($key))
+    return ([guid]::new([byte[]]$hash[0..15])).ToString()
+}
+
+function Get-ContentHubField($Object, [string]$Name) {
+    if ($null -eq $Object) { return $null }
+    if ($Object -is [Collections.IDictionary]) { return $Object[$Name] }
+    if ($Object.PSObject.Properties[$Name]) { return $Object.$Name }
+    return $null
+}
+
+function Get-ContentHubSavedWorkbooks {
+    $items = @{}
+    foreach ($category in @('sentinel', 'workbook')) {
+        $uri = "$($script:ServerUrl)/subscriptions/$($script:SubscriptionId)/providers/Microsoft.Insights/workbooks?api-version=2022-04-01&category=$category"
+        $result = Invoke-SentinelApi -Uri $uri -Method GET -Headers @{}
+        if (-not $result -or -not $result.PSObject.Properties['value']) { throw 'Saved workbook inventory was incomplete; refusing to infer absence.' }
+        foreach ($item in $result.value) {
+            if (-not (Get-ContentHubField $item 'id')) { throw 'Saved workbook inventory contains a resource without an ID.' }
+            $items[[string]$item.id] = $item
+        }
+    }
+    return @($items.Values)
+}
+
+function Test-ContentHubRuleCollision($Rules, [string]$TemplateName, [string]$DisplayName, [string]$Kind) {
+    if (-not $TemplateName -or $TemplateName.StartsWith('[')) { return 'Missing or unevaluated template identity.' }
+    $stableId = Get-ContentHubStableId 'AnalyticsRule' $TemplateName
+    $matches = @($Rules | Where-Object {
+        if ($null -eq $_) { return $false }
+        (Get-ContentHubField $_.properties 'alertRuleTemplateName') -eq $TemplateName -or
+        ($DisplayName -and (Get-ContentHubField $_.properties 'displayName') -eq $DisplayName) -or $_.name -eq $stableId
+    })
+    if ($matches.Count -gt 1) { return "Multiple existing rules match the template/name: $(@($matches.name) -join ', '). Existing duplicates are preserved." }
+    if ($matches.Count -eq 1) {
+        $rule = $matches[0]
+        $existingKind = Get-ContentHubField $rule 'kind'
+        if ($existingKind -eq 'NRT') { return "Existing NRT rule $($rule.name) is preserved." }
+        if ((Get-ContentHubField $rule.properties 'alertRuleTemplateName') -ne $TemplateName) { return "Existing rule $($rule.name) has an exact name/ID collision without the same template link; preserving user-owned content." }
+        if ($existingKind -and $existingKind -ne $Kind) { return "Existing rule $($rule.name) has a different kind; no replacement is permitted." }
+    }
+    return $null
+}
+
+function Resolve-ContentHubWorkbookIdentity($Metadata, $SavedWorkbooks, [string]$ContentId, [string[]]$DisplayNames, [hashtable]$ReadCache = @{}) {
+    $result = @{ Blocked = $false; Reason = ''; Metadata = $null; Resource = $null; ResourceId = ''; Name = '' }
+    if (-not $ContentId -or $ContentId.StartsWith('[')) {
+        $result.Blocked = $true; $result.Reason = 'Missing or unevaluated workbook content identity.'
+        return $result
+    }
+    $workspaceId = $script:BaseUri.Substring($script:ServerUrl.Length).TrimEnd('/')
+    $name = Get-ContentHubStableId 'Workbook' $ContentId
+    $result.Name = $name
+    $result.ResourceId = "/subscriptions/$($script:SubscriptionId)/resourceGroups/$ResourceGroup/providers/Microsoft.Insights/workbooks/$name"
+    $links = @($Metadata | Where-Object {
+        (Get-ContentHubField $_.properties 'contentId') -eq $ContentId -and
+        (Get-ContentHubField $_.properties 'parentId') -match '/providers/Microsoft\.Insights/workbooks/'
+    })
+    $parents = @($links | ForEach-Object { [string]$_.properties.parentId } | Sort-Object -Unique)
+    $candidates = @{}
+    foreach ($parent in $parents) {
+        if ($parent -notmatch "^/subscriptions/$([regex]::Escape($script:SubscriptionId))/resourceGroups/[^/]+/providers/Microsoft\.Insights/workbooks/[^/?#]+$") {
+            $result.Blocked = $true; $result.Reason = "Untrusted workbook metadata parentId: $parent"
+            return $result
+        }
+        # A stale metadata link is absence only on this explicit resource GET's 404.
+        if (-not $ReadCache.ContainsKey($parent)) {
+            $ReadCache[$parent] = Invoke-SentinelApi -Uri "$($script:ServerUrl)$parent`?api-version=2022-04-01" -Method GET -Headers @{} -AllowMissingWorkbook
+        }
+        $saved = $ReadCache[$parent]
+        if ($saved) {
+            if ($saved.id -ne $parent) { throw 'Workbook readback returned an unexpected resource identity.' }
+            $candidates[$parent] = $saved
+        }
+    }
+    foreach ($saved in $SavedWorkbooks) {
+        $properties = Get-ContentHubField $saved 'properties'
+        $tags = Get-ContentHubField $saved 'tags'
+        $source = [string](Get-ContentHubField $properties 'sourceId')
+        $tag = [string](Get-ContentHubField $tags 'hidden-sentinelWorkspaceId')
+        $inWorkspace = $source.TrimEnd('/') -eq $workspaceId -or $tag.TrimEnd('/') -eq $workspaceId
+        $titleMatch = @($DisplayNames | Where-Object { $_ -and $_ -eq (Get-ContentHubField $properties 'displayName') }).Count -gt 0
+        if (($inWorkspace -and ($titleMatch -or (Get-ContentHubField $tags 'sentinel-contentId') -eq $ContentId)) -or $saved.id -eq $result.ResourceId) {
+            if (-not $candidates.ContainsKey([string]$saved.id)) { $candidates[[string]$saved.id] = $saved }
+        }
+    }
+    if ($candidates.Count -gt 1) {
+        $result.Blocked = $true; $result.Reason = "Multiple saved workbooks match: $(@($candidates.Keys) -join ', '). Existing duplicates are preserved."
+        return $result
+    }
+    if (-not $candidates.Count) { return $result }
+    $saved = @($candidates.Values)[0]
+    $source = [string](Get-ContentHubField (Get-ContentHubField $saved 'properties') 'sourceId')
+    $tag = [string](Get-ContentHubField (Get-ContentHubField $saved 'tags') 'hidden-sentinelWorkspaceId')
+    $link = @($links | Where-Object { $_.properties.parentId -eq $saved.id })
+    if (($source -and $source.TrimEnd('/') -ne $workspaceId) -or ($tag -and $tag.TrimEnd('/') -ne $workspaceId)) {
+        $result.Blocked = $true; $result.Reason = "Workbook $($saved.id) belongs to a different or conflicting workspace."
+        return $result
+    }
+    # Only Sentinel metadata authorizes updating an existing saved workbook.
+    # A deterministic ID/tag without metadata means a prior write may have been interrupted:
+    # preserve it rather than create a duplicate or claim its metadata is complete.
+    if (-not $link.Count) {
+        $result.Blocked = $true; $result.Reason = "Saved workbook $($saved.id) already exists without a verified Sentinel metadata link; preserved. Review/link it manually rather than duplicate or overwrite it."
+        return $result
+    }
+    if ($link.Count -gt 1) {
+        $result.Blocked = $true; $result.Reason = "Multiple metadata entries refer to $($saved.id); review the conflicting links."
+        return $result
+    }
+    $result.Metadata = $link[0]
+    $result.Resource = $saved
+    $result.ResourceId = [string]$saved.id
+    $result.Name = ($result.ResourceId -split '/')[-1]
     return $result
 }
 
@@ -616,18 +1764,109 @@ function Update-ContentHubSource([string]$Source) {
     # Tiny authentication fixtures do not contain a deployment engine.
     if (-not @($functions | Where-Object Name -eq 'Invoke-Main').Count) { return $Source }
     $edits = [Collections.Generic.List[object]]::new()
-    foreach ($name in @('Get-SolutionStatus', 'Deploy-AnalyticsRules', 'Deploy-Workbooks')) {
+    foreach ($name in @('Get-SolutionStatus', 'Get-ContentHubSolutions', 'Deploy-Solution', 'Get-SolutionUpdateReport', 'Invoke-Main', 'Deploy-AnalyticsRules', 'Deploy-Workbooks')) {
         $nodes = @($functions | Where-Object Name -eq $name)
         if ($nodes.Count -ne 1) { throw "Upstream deployment layout changed: $name. Review before executing." }
         $node = $nodes[0]
         $text = $node.Extent.Text
         if ($name -eq 'Get-SolutionStatus') {
             $text = "function Get-SolutionStatus {`n$((Get-Command Get-VersionAwareSolutionStatus).Definition)`n}"
+        } elseif ($name -eq 'Get-ContentHubSolutions') {
+            $old = 'Write-PipelineMessage "Could not fetch installed solutions: $($_.Exception.Message). Treating all as new." -Level Warning'
+            if (-not $text.Contains($old)) { throw 'Upstream package inventory error handling changed.' }
+            $text = $text.Replace($old, 'throw # A failed registration inventory never authorizes installation.')
+            $text = $text.Replace('Found $($installedPackages.Count) installed solutions.', 'Found $($installedPackages.Count) package registration records; owned artifacts are verified separately.')
+            $old = '$installedLookup[$name] = $pkg'
+            if (-not $text.Contains($old)) { throw 'Upstream package lookup layout changed.' }
+            $text = $text.Replace($old, 'if ($installedLookup.ContainsKey($name)) { throw "Ambiguous registered package name: $name" }; $installedLookup[$name] = $pkg')
+        } elseif ($name -eq 'Get-SolutionUpdateReport') {
+            $text = 'function Get-SolutionUpdateReport { param($SolutionStatuses) Write-ContentHubPackagePresenceReport $SolutionStatuses }'
+        } elseif ($name -eq 'Deploy-Solution') {
+            $old = '$detailedSolution.properties.PSObject.Properties.Name -contains "packagedContent"'
+            if (-not $text.Contains($old)) { throw 'Upstream package body discovery layout changed.' }
+            $text = $text.Replace($old, '$detailedSolution.properties.PSObject.Properties["packagedContent"]')
+            $old = '$action = $SolutionStatus.Action'
+            if (-not $text.Contains($old)) { throw 'Upstream solution action layout changed.' }
+            $text = $text.Replace($old, $old + @'
+
+    if ($SolutionStatus.Status -eq 'Unverified') {
+        Write-PipelineMessage "  ActionRequired: $solutionName installation is unverified. $($SolutionStatus.Presence.Detail)" -Level Warning
+        return $false
+    }
+'@)
+            $old = '    if (-not $packagedContent) {'
+            if ([regex]::Matches($text, [regex]::Escape($old)).Count -ne 1) { throw 'Upstream packaged content layout changed.' }
+            $text = $text.Replace($old, @'
+    if (-not $packagedContent -or -not $packagedContent.PSObject.Properties['resources']) {
+        throw 'The catalog returned no deployable package manifest. Registration alone would not install its content; no write submitted.'
+    }
+    if ($SolutionStatus.Status -in @('RepairRequired', 'RegistrationMissing')) {
+        $packagedContent = $SolutionStatus.Presence.RepairTemplate
+        if (-not $packagedContent) { throw 'No verified repair template is available.' }
+    }
+    if ($packagedContent -and $packagedContent.PSObject.Properties['resources'] -and $packagedContent.resources.Count -eq 0) {
+        # An explicit empty manifest is a valid registration-only solution.
+        $packagedContent = $null
+    }
+    if (-not $packagedContent) {
+'@)
+        } elseif ($name -eq 'Invoke-Main') {
+            $old = '$script:AuthHeader          = $azCtx.AuthHeader'
+            if (-not $text.Contains($old)) { throw 'Upstream target initialization layout changed.' }
+            $text = $text.Replace($old, "$old`n    Confirm-ContentHubSelectedTarget")
+            $old = '$success = Deploy-Solution -SolutionStatus $status'
+            if (-not $text.Contains($old)) { throw 'Upstream package deployment outcome layout changed.' }
+            $text = $text.Replace($old, "$old`n            `$status.DeploymentSucceeded = [bool]`$success")
+            $old = '    # Track which solutions were freshly installed or updated this run'
+            if (-not $text.Contains($old)) { throw 'Upstream package/runtime phase boundary changed.' }
+            $text = $text.Replace($old, "    Confirm-ContentHubPackageArtifacts `$solutionStatuses`n`n$old")
+            $text = $text.Replace('Freshly deployed solutions (content will be force-processed)', 'Package operations completed (runtime content still uses independent version/identity checks)')
         } else {
             $pattern = '(?m)^[ \t]*\$isFromNewSolution = [^\r\n]+'
             if ([regex]::Matches($text, $pattern).Count -ne 1) { throw "Upstream content version layout changed: $name." }
             $text = [regex]::Replace($text, $pattern, '        $isFromNewSolution = $false')
             if ($name -eq 'Deploy-AnalyticsRules') {
+                $kindAssignments = @($node.FindAll({
+                    param($n)
+                    $n -is [Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -eq '$kind'
+                }, $true))
+                if ($kindAssignments.Count -ne 1) { throw 'Upstream analytics rule-kind detection layout changed; refusing to deploy without the NRT filter.' }
+                $kindAssignment = $kindAssignments[0].Extent.Text
+                $text = $text.Replace($kindAssignment, $kindAssignment + @'
+
+        if ($kind -eq 'NRT') {
+            $nrtContentId = Get-ContentHubField $template.properties 'contentId'
+            if ($nrtContentId) { [void]$seenContent.Add("id:$nrtContentId") }
+            Write-PipelineMessage "  Skipping NRT rule (excluded): $displayName" -Level Info
+            $counters.Skipped++
+            continue
+        }
+'@)
+                $templateAssignments = @($node.FindAll({
+                    param($n)
+                    $n -is [Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -eq '$templateName'
+                }, $true))
+                if ($templateAssignments.Count -ne 1) { throw 'Upstream rule identity layout changed; refusing to alter existing NRT rules.' }
+                $templateAssignment = $templateAssignments[0].Extent.Text
+                $text = $text.Replace($templateAssignment, $templateAssignment + @'
+
+        $collision = Test-ContentHubRuleCollision $existingRules $templateName $displayName $kind
+        if ($collision -or -not $seenContent.Add("id:$templateName") -or -not $seenContent.Add("title:$displayName")) {
+            Write-PipelineMessage "  ActionRequired/Skipped rule '$displayName': $(if ($collision) { $collision } else { 'Repeated template identity or exact title in this run.' })" -Level Warning
+            $counters.Skipped++
+            continue
+        }
+        # Also protect an existing NRT rule if the current template changes kind.
+        $matchedRules = @(
+            if ($templateName -and $rulesByTemplate.ContainsKey($templateName)) { $rulesByTemplate[$templateName] }
+            if ($displayName -and $rulesByName.ContainsKey($displayName)) { $rulesByName[$displayName] }
+        )
+        if (@($matchedRules | Where-Object { $_.PSObject.Properties['kind'] -and $_.kind -eq 'NRT' }).Count) {
+            Write-PipelineMessage "  Skipping existing NRT rule (preserved): $displayName" -Level Info
+            $counters.Skipped++
+            continue
+        }
+'@)
                 $deletes = @($node.FindAll({
                     param($n)
                     $n -is [Management.Automation.Language.CommandAst] -and
@@ -640,9 +1879,10 @@ function Update-ContentHubSource([string]$Source) {
                     $deleteBlock = $deleteBlock.Parent
                 }
                 if (-not $deleteBlock) { throw 'Upstream NRT replacement layout changed.' }
-                # A prerequisite-related PUT failure must never follow deletion
-                # of the existing rule. Try an in-place update; report failures.
-                $text = $text.Replace($deleteBlock.Extent.Text, '# Existing NRT rules are updated in place, never deleted before validation.')
+                $text = $text.Replace($deleteBlock.Extent.Text, '# NRT rules are excluded above; existing NRT rules are never deleted.')
+                $old = '(New-Guid).Guid'
+                if ([regex]::Matches($text, [regex]::Escape($old)).Count -ne 1) { throw 'Upstream analytics resource naming changed.' }
+                $text = $text.Replace($old, "(Get-ContentHubStableId 'AnalyticsRule' `$templateName)")
             }
             if ($name -eq 'Deploy-Workbooks') {
                 $old = 'Invoke-SentinelApi -Uri $detailUrl -Method Get -Headers $script:AuthHeader'
@@ -663,21 +1903,75 @@ function Update-ContentHubSource([string]$Source) {
                 $old = '/contentTemplates/${tmplId}?'
                 if (-not $text.Contains($old)) { throw 'Upstream workbook identifier layout changed.' }
                 $text = $text.Replace($old, '/contentTemplates/$([uri]::EscapeDataString($tmplId))?')
+                $old = 'Write-PipelineMessage "Could not fetch workbook metadata: $($_.Exception.Message)" -Level Warning'
+                if (-not $text.Contains($old)) { throw 'Upstream workbook inventory error handling changed.' }
+                $text = $text.Replace($old, 'throw # A failed inventory never establishes absence.')
                 $old = '        $needsUpdate = $false'
                 if ([regex]::Matches($text, [regex]::Escape($old)).Count -ne 1) { throw 'Upstream workbook version layout changed.' }
                 $text = $text.Replace($old, @'
-        # Metadata is not proof that the saved workbook still exists.
-        if ($existingMeta) {
-            $parent = [string]$existingMeta.properties.parentId
-            if ($parent -notmatch '^/subscriptions/[^/]+/resourceGroups/[^/]+/providers/Microsoft\.Insights/workbooks/[^/?#]+$') {
-                throw 'Unexpected workbook metadata parentId; refusing version skip.'
-            }
-            $saved = Invoke-SentinelApi -Uri "$($script:ServerUrl)$parent`?api-version=2022-04-01" -Method GET -Headers @{} -AllowMissingWorkbook
-            if (-not $saved) { $existingMeta = $null }
+        $displayNames = @($displayName)
+        $mainTemplate = Get-ContentHubField $template.properties 'mainTemplate'
+        $displayNames += @((Get-ContentHubField $mainTemplate 'resources') | Where-Object { $_ -and (Get-ContentHubField $_ 'type') -eq 'Microsoft.Insights/workbooks' } | ForEach-Object { Get-ContentHubField $_.properties 'displayName' })
+        $workbookIdentity = Resolve-ContentHubWorkbookIdentity $existingWorkbooks $savedWorkbooks $contentId $displayNames $workbookReads
+        if ($workbookIdentity.Blocked -or -not $seenContent.Add("id:$contentId") -or -not $seenContent.Add("title:$displayName")) {
+            Write-PipelineMessage "  ActionRequired/Skipped workbook '$displayName': $(if ($workbookIdentity.Blocked) { $workbookIdentity.Reason } else { 'Repeated template identity or exact title in this run.' })" -Level Warning
+            $counters.Skipped++
+            continue
         }
+        $existingMeta = $workbookIdentity.Metadata
         $needsUpdate = $false
 '@)
+                foreach ($variable in @('$guid', '$workbookPath', '$workbookResourceId')) {
+                    $assignments = @($node.FindAll({
+                        param($n)
+                        $n -is [Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -eq $variable
+                    }, $true))
+                    if ($assignments.Count -ne 1) { throw "Upstream workbook resource naming changed: $variable." }
+                    $replacement = switch ($variable) {
+                        '$guid' { '$guid = $workbookIdentity.Name' }
+                        '$workbookPath' { '$workbookPath = "$($workbookIdentity.ResourceId)?api-version=2022-04-01"' }
+                        '$workbookResourceId' { '$workbookResourceId = $workbookIdentity.ResourceId' }
+                    }
+                    $text = $text.Replace($assignments[0].Extent.Text, $replacement)
+                }
+                $old = '        $workbookPayload = $workbookBody | ConvertTo-Json -Depth 50 -EnumsAsStrings'
+                if (-not $text.Contains($old)) { throw 'Upstream workbook payload layout changed.' }
+                $text = $text.Replace($old, @'
+        # The detailed template can have a different title from the listing.
+        $finalIdentity = Resolve-ContentHubWorkbookIdentity $existingWorkbooks $savedWorkbooks $contentId @($displayName, $wbDisplayName) $workbookReads
+        if ($finalIdentity.Blocked -or $finalIdentity.ResourceId -ne $workbookIdentity.ResourceId -or
+            -not $seenContent.Add("saved-title:$wbDisplayName")) {
+            Write-PipelineMessage "  ActionRequired/Skipped workbook '$wbDisplayName': a saved title/identity collision requires review. $($finalIdentity.Reason)" -Level Warning
+            $counters.Skipped++
+            continue
+        }
+        if ($workbookIdentity.Resource) {
+            if (Get-ContentHubField $workbookIdentity.Resource 'location') { $workbookBody.location = $workbookIdentity.Resource.location }
+            $savedTags = Get-ContentHubField $workbookIdentity.Resource 'tags'
+            if ($savedTags) {
+                foreach ($tag in $savedTags.PSObject.Properties) { $workbookBody.tags[$tag.Name] = $tag.Value }
             }
+        }
+        $workbookBody.tags['sentinel-contentId'] = $contentId
+        $workbookPayload = $workbookBody | ConvertTo-Json -Depth 50 -EnumsAsStrings
+'@)
+            }
+            $old = '    foreach ($template in $targetTemplates) {'
+            if ([regex]::Matches($text, [regex]::Escape($old)).Count -ne 1) { throw "Upstream template enumeration changed: $name." }
+            $initialization = @'
+    # Inert template versions coexist in Content Hub. Reconcile the newest first
+    # so the same-run identity guard cannot select an older version by list order.
+    $targetTemplates = @($targetTemplates | Sort-Object -Property @{ Expression = {
+        $version = [string](Get-ContentHubField $_.properties 'version')
+        if ($version -match '^\d+(\.\d+)?$') { while (($version -split '\.').Count -lt 3) { $version += '.0' } }
+        $parsed = $null
+        if ([Management.Automation.SemanticVersion]::TryParse($version, [ref]$parsed)) { $parsed }
+        else { [Management.Automation.SemanticVersion]'0.0.0' }
+    }; Descending = $true }, @{ Expression = { $_.name } })
+    $seenContent = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+'@
+            if ($name -eq 'Deploy-Workbooks') { $initialization += "`n    `$savedWorkbooks = @(Get-ContentHubSavedWorkbooks)`n    `$workbookReads = @{}" }
+            $text = $text.Replace($old, "$initialization`n$old")
         }
         $edits.Add(@{ Start = $node.Extent.StartOffset; Length = $node.Extent.EndOffset - $node.Extent.StartOffset; Text = $text })
     }
@@ -687,8 +1981,8 @@ function Update-ContentHubSource([string]$Source) {
         throw 'Upstream completion reporting layout changed; review before executing.'
     }
     $Source = $Source.Replace($successMessage, @'
-if ($script:ContentHubUnresolvedFailures.Count -gt 0) {
-            Write-PipelineMessage "Content phase finished with unresolved API errors. Upstream skip counters do not establish successful rule deployment; detailed outcomes follow." -Level Warning
+if ($script:ContentHubUnresolvedFailures.Count -gt 0 -or $script:ContentHubPackageUnverified.Count -gt 0) {
+            Write-PipelineMessage "Content phase finished with unresolved API errors or unverified package artifacts. Registration/skip counters do not establish deployment success; detailed outcomes follow." -Level Warning
         } else {
             Write-PipelineMessage "Deployment completed successfully." -Level Success
         }
@@ -717,6 +2011,16 @@ function New-ContentHubDeploymentCopy([string]$Path) {
     }
     $adapter = (Get-Command Invoke-ContentHubArmApi -CommandType Function).Definition
     $insert = "`n`$script:ContentHubApiFailures = 0`n`$script:ContentHubUnresolvedFailures = @{} `n`$script:ContentHubRequestDetails = @{} `nfunction Invoke-SentinelApi {`n$adapter`n}`n"
+    foreach ($helper in @('Get-ContentHubStableId', 'Get-ContentHubField', 'Get-ContentHubSavedWorkbooks', 'Test-ContentHubRuleCollision', 'Resolve-ContentHubWorkbookIdentity', 'Compare-ContentHubArtifactVersion', 'Resolve-ContentHubManifestValue', 'Get-ContentHubPresenceInventory', 'Get-ContentHubArtifactIdentity', 'Save-ContentHubPackageDiagnostic', 'Read-ContentHubArtifact', 'ConvertTo-ContentHubSharedValue', 'Test-ContentHubSharedTemplate', 'Test-ContentHubPackagePresence', 'Confirm-ContentHubSelectedTarget', 'Write-ContentHubPackagePresenceReport', 'Confirm-ContentHubPackageArtifacts')) {
+        $insert += "`nfunction $helper {`n$((Get-Command $helper -CommandType Function).Definition)`n}`n"
+    }
+    $expected = Get-Variable ContentHubExpectedTarget -Scope Script -ValueOnly -ErrorAction SilentlyContinue
+    if ($expected) {
+        $serializedTarget = (ConvertTo-Json $expected -Compress).Replace("'", "''")
+        $insert += "`n`$script:ContentHubExpectedTarget = '$serializedTarget' | ConvertFrom-Json -AsHashtable`n"
+    }
+    $insert += "`n`$script:ContentHubPresenceInventory = @{}`n`$script:ContentHubPackageUnverified = @{}`n"
+    $insert += "`n`$script:ContentHubPackageDiagnostics = if (`$null -ne `$ContentHubDiagnosticsSink) { `$ContentHubDiagnosticsSink } else { @{} }`n"
     $insert += @'
 function Invoke-ContentHubWorkbookWrite([string]$Path, [string]$Payload) {
     $null = Invoke-SentinelApi -Uri "$($script:ServerUrl)$Path" -Method PUT -Headers @{} -Body $Payload
@@ -724,7 +2028,11 @@ function Invoke-ContentHubWorkbookWrite([string]$Path, [string]$Payload) {
 }
 
 '@
-    $source = Update-ContentHubSource ($ast.Extent.Text.Insert($imports[0].Extent.EndOffset, $insert))
+    if (-not $ast.ParamBlock) { throw 'Upstream parameter block missing; cannot preserve package diagnostics.' }
+    $source = $ast.Extent.Text.Insert($imports[0].Extent.EndOffset, $insert)
+    $separator = if ($ast.ParamBlock.Parameters.Count) { ',' } else { '' }
+    $source = $source.Insert($ast.ParamBlock.Extent.EndOffset - 1, "$separator`n[hashtable]`$ContentHubDiagnosticsSink`n")
+    $source = Update-ContentHubSource $source
     $source += @'
 
 if ($script:ContentHubUnresolvedFailures.Count -gt 0) {
@@ -734,12 +2042,16 @@ if ($script:ContentHubUnresolvedFailures.Count -gt 0) {
     $failure.Data['ContentHubRequestDetails'] = $details
     # Only rule-level validation failures can be deferred until after connector
     # configuration. Authentication, package, discovery and workbook failures stop.
-    $failure.Data['ContentHubRuleValidationOnly'] = $details.Count -eq $script:ContentHubUnresolvedFailures.Count -and
+    $failure.Data['ContentHubRuleValidationOnly'] = $script:ContentHubPackageUnverified.Count -eq 0 -and
+        $details.Count -eq $script:ContentHubUnresolvedFailures.Count -and
         @($details | Where-Object {
             $_.Method -ne 'PUT' -or $_.HttpStatus -ne 400 -or
             $_.ResourceId -notmatch '/Microsoft\.SecurityInsights/alertRules/[^/]+$'
         }).Count -eq 0
     throw $failure
+}
+if ($script:ContentHubPackageUnverified.Count -gt 0) {
+    throw "Package artifact installation remains unverified: $(@($script:ContentHubPackageUnverified.GetEnumerator() | ForEach-Object { '{0}: {1}' -f $_.Key, $_.Value }) -join '; '). Package registrations and runtime deployment are separate."
 }
 '@
     $null = [Management.Automation.Language.Parser]::ParseInput($source, [ref]$tokens, [ref]$errors)
@@ -753,13 +2065,14 @@ if ($script:ContentHubUnresolvedFailures.Count -gt 0) {
 function Deploy-Solutions([string[]]$Solutions, [string]$Label) {
     if ($Solutions.Count -eq 0) { return }
     Step $Label
+    if (-not (Get-Variable ContentHubPackageDiagnostics -Scope Script -ErrorAction SilentlyContinue)) { $script:ContentHubPackageDiagnostics = @{} }
     $temporaryScript = New-ContentHubDeploymentCopy $script:DeployScript
     $previousExitCode = Get-Variable LASTEXITCODE -Scope Global -ErrorAction SilentlyContinue
     $savedExitCode = if ($previousExitCode) { $previousExitCode.Value } else { $null }
     try {
         $invocationState = @{ ErrorCount = 0 }
         $global:LASTEXITCODE = 0
-        & $temporaryScript -SubscriptionId $script:SubscriptionId -ResourceGroup $script:ResourceGroup -Workspace $script:Workspace -Region $script:Region -Solutions $Solutions -SeveritiesToInclude $Severities -WhatIf:$WhatIfPreference 2>&1 |
+        & $temporaryScript -SubscriptionId $script:SubscriptionId -ResourceGroup $script:ResourceGroup -Workspace $script:Workspace -Region $script:Region -Solutions $Solutions -SeveritiesToInclude $Severities -ContentHubDiagnosticsSink $script:ContentHubPackageDiagnostics -WhatIf:$WhatIfPreference 2>&1 |
             ForEach-Object {
                 if ($_ -is [Management.Automation.ErrorRecord]) {
                     $invocationState.ErrorCount++
@@ -799,6 +2112,7 @@ function Invoke-ConnectorChange([string]$Target, [string]$Action) {
 
 $script:ConnectorReport = [Collections.Generic.List[object]]::new()
 $script:ContentHubRuleFailures = @{}
+$script:ContentHubPackageDiagnostics = @{}
 $script:Operation = @{}
 $script:CurrentRecord = $null
 $script:Candidates = [Collections.Generic.List[object]]::new()
@@ -1107,7 +2421,7 @@ function Get-SetupGuidance([string]$Key) {
         'Office365' { 'Verify Microsoft 365 audit licensing and unified audit logging for Exchange, SharePoint/OneDrive and Teams workloads, tenant administrator consent and OfficeActivity ingestion.' }
         'IdentityProtection' { 'Verify Entra ID Protection licensing, tenant security-administrator permissions and Identity Protection alert ingestion; do not duplicate this source through XDR.' }
         'MicrosoftThreatProtection' { 'Review duplicate incident-creation rules; advanced-hunting event streams require separate XDR connector-page setup. Verify Defender product licensing, tenant permissions and component coverage.' }
-        'EntraDiagnostics' { 'All tenant-advertised diagnostic log categories are selected by default. Verify category-specific licensing, tenant permissions and ingestion costs. Use explicit -EntraLogCategories values only to intentionally restrict collection.' }
+        'EntraDiagnostics' { 'Entra uses diagnosticSettings GET/PUT with the selected workspace ARM resource ID. Explicit -EntraLogCategories bypasses category discovery. All falls back to the six reference categories if discovery is unavailable; review additional categories separately. Verify tenant permissions, licenses and ingestion costs.' }
         'AzureActivity' { 'Verify subscription diagnostic setting permissions and Activity log ingestion.' }
         'AzureStorageAccount' { 'Automatically discovers existing storage blob/file/queue/table service resources in -SourceSubscriptionIds. Override discovery with -DiagnosticResourceIds. No storage services or metrics are created.' }
         'AzureNSG' { 'Automatically discovers NSGs in -SourceSubscriptionIds. This enables NSG diagnostic logs, not Network Watcher flow logs.' }
@@ -2093,6 +3407,56 @@ function Enable-WindowsSecurityEventCollection([string]$Label) {
     }
 }
 
+function Get-EntraLogSelection {
+    $cacheKey = "$script:TenantId|$($EntraLogCategories -join ',')"
+    if (-not (Get-Variable EntraLogSelectionCache -Scope Script -ErrorAction SilentlyContinue)) {
+        $script:EntraLogSelectionCache = @{}
+    }
+    if ($script:EntraLogSelectionCache.ContainsKey($cacheKey)) {
+        return $script:EntraLogSelectionCache[$cacheKey]
+    }
+    $referenceCategories = @('AuditLogs', 'SignInLogs', 'NonInteractiveUserSignInLogs',
+        'ServicePrincipalSignInLogs', 'ManagedIdentitySignInLogs', 'ProvisioningLogs')
+    $allRequested = $EntraLogCategories -contains 'All'
+    $fallback = $false
+    $reason = ''
+    if ($allRequested) {
+        try {
+            $categories = @(Read-ArmList '/providers/Microsoft.AADIAM/diagnosticSettingsCategories?api-version=2017-04-01' |
+                ForEach-Object { [string](Get-Field $_ 'name' '') } | Where-Object { $_ } | Sort-Object -Unique)
+        } catch {
+            if ($_.Exception.Data['ArmStatusCode'] -notin @(400, 404, 405)) { throw }
+            $categories = @()
+            $reason = "category discovery returned HTTP $($_.Exception.Data['ArmStatusCode'])"
+        }
+        if (-not $categories.Count) {
+            $fallback = $true
+            if (-not $reason) { $reason = 'category discovery returned no categories' }
+            $categories = $referenceCategories
+            Write-Warning "Microsoft Entra ID: $reason. Using the six reference log categories; this does not confirm ALL tenant log categories."
+        }
+    } else {
+        $categories = @($EntraLogCategories | ForEach-Object { $_.Trim() } | Where-Object { $_ } | Sort-Object -Unique)
+    }
+    if (-not $categories.Count) { throw 'No Entra log categories selected; no settings changed.' }
+    # Diagnostic category IDs are not table names (for example, no AAD prefix).
+    $tableAliases = @{
+        AADNonInteractiveUserSignInLogs = 'NonInteractiveUserSignInLogs'
+        AADServicePrincipalSignInLogs = 'ServicePrincipalSignInLogs'
+        AADManagedIdentitySignInLogs = 'ManagedIdentitySignInLogs'
+        AADProvisioningLogs = 'ProvisioningLogs'
+    }
+    $categories = @($categories | ForEach-Object {
+        if ($tableAliases.ContainsKey($_)) { $tableAliases[$_] } else { $_ }
+    } | Sort-Object -Unique)
+    $selection = @{
+        Categories = $categories; AllRequested = $allRequested
+        UsedReferenceFallback = $fallback; DiscoveryNote = $reason
+    }
+    $script:EntraLogSelectionCache[$cacheKey] = $selection
+    return $selection
+}
+
 function Get-UncoveredCategories($Settings, [string[]]$Categories) {
     $sameDestination = @($Settings | Where-Object { (Get-Field $_.properties 'workspaceId' '') -eq $script:WorkspaceId })
     foreach ($category in $Categories) {
@@ -2114,7 +3478,7 @@ function Get-DiagnosticRouting($Properties, [string]$ResourceId = '') {
 
 function Enable-DiagnosticConnector([string]$Label, [string]$Scope, [string[]]$Categories, [switch]$Entra, [switch]$Dedicated) {
     $api = if ($Entra) { '2017-04-01' } else { $MonitorApiVersion }
-    $root = if ($Entra) { '/providers/microsoft.aadiam' } else { "$Scope/providers/Microsoft.Insights" }
+    $root = if ($Entra) { '/providers/Microsoft.AADIAM' } else { "$Scope/providers/Microsoft.Insights" }
     $settings = @(Read-ArmList "$root/diagnosticSettings?api-version=$api")
     $sameDestination = @($settings | Where-Object { (Get-Field $_.properties 'workspaceId' '') -eq $script:WorkspaceId })
     $uncovered = @(Get-UncoveredCategories $settings $Categories)
@@ -2142,11 +3506,16 @@ function Enable-DiagnosticConnector([string]$Label, [string]$Scope, [string[]]$C
     }
     if ($settings.Count -ge 5) { throw 'Five diagnostic settings already exist. Consolidate manually, then rerun.' }
     $name = 'sentinel-' + (Get-StableName "$script:WorkspaceId|$sourceScope|$($Categories -join ',')").Substring(0, 24)
+    if ($Entra -and -not @($settings | Where-Object name -eq 'Microsoft-Entra-ID-Sentinel').Count) {
+        $name = 'Microsoft-Entra-ID-Sentinel'
+    }
     if (@($settings | Where-Object name -eq $name).Count -gt 0) { throw "Diagnostic setting name collision: $name. No existing setting will be overwritten." }
     $properties = @{ workspaceId = $script:WorkspaceId; logs = @() }
     if ($Dedicated -and -not (Test-StorageQueueScope $Scope)) { $properties.logAnalyticsDestinationType = 'Dedicated' }
     foreach ($category in $uncovered) {
-        $properties.logs += @{ category = $category; enabled = $true; retentionPolicy = @{ enabled = $false; days = 0 } }
+        $log = @{ category = $category; enabled = $true }
+        if (-not $Entra) { $log.retentionPolicy = @{ enabled = $false; days = 0 } }
+        $properties.logs += $log
     }
     $routing = Get-DiagnosticRouting $properties $Scope
     $script:Operation.Change = "Create separate diagnostic setting: $destination; setting=$name; newly enabled categories: $($uncovered -join ', '); table routing=$routing"
@@ -2373,7 +3742,7 @@ function Get-ConnectorRecordEvidence($Record) {
 function Get-DiagnosticRecordEvidence($Record) {
     $key = [string]$Record.Key
     $scopes = switch ($key) {
-        'EntraDiagnostics' { '/providers/microsoft.aadiam' }
+        'EntraDiagnostics' { '/providers/Microsoft.AADIAM' }
         'AzureActivity' { $SourceSubscriptionIds | ForEach-Object { "/subscriptions/$_" } }
         default {
             if ($script:ExplicitDiagnosticSources) {
@@ -2402,9 +3771,8 @@ function Get-DiagnosticRecordEvidence($Record) {
         $api = if ($isEntra) { '2017-04-01' } else { $MonitorApiVersion }
         $categories = @(switch ($key) {
             'EntraDiagnostics' {
-                if ($EntraLogCategories -contains 'All') {
-                    Read-ArmList "$root/diagnosticSettingsCategories?api-version=$api" | ForEach-Object { $_.name }
-                } else { $EntraLogCategories }
+                $selection = Get-EntraLogSelection
+                $selection.Categories
             }
             'AzureActivity' { 'Administrative', 'Security', 'ServiceHealth', 'Alert', 'Recommendation', 'Policy', 'Autoscale', 'ResourceHealth' }
             'AzureStorageAccount' { 'StorageRead', 'StorageWrite', 'StorageDelete' }
@@ -2423,12 +3791,15 @@ function Get-DiagnosticRecordEvidence($Record) {
         }
         $details.Add("${scope}: covered=$($categories.Count - $uncovered.Count)/$($categories.Count); missing=$($uncovered -join ', ')")
     }
+    $allCoverageUnknown = $key -eq 'EntraDiagnostics' -and (Get-EntraLogSelection).UsedReferenceFallback
     @{
-        ConnectorStatus = $(if ($complete -eq $scopes.Count) { 'Configured (ingestion unverified)' }
+        ConnectorStatus = $(if ($allCoverageUnknown -and $complete -eq $scopes.Count) { 'Partially configured (six reference categories verified; all-category coverage unknown)' }
+            elseif ($complete -eq $scopes.Count) { 'Configured (ingestion unverified)' }
             elseif ($coveredCount -gt 0) { 'Partially configured' } else { 'Not configured for selected categories' })
         Existing = $details -join '; '
         Verified = $true
-        Verification = "Read-only diagnostic settings GET for $($scopes.Count) selected source(s); does not prove event ingestion."
+        Verification = "Read-only diagnostic settings GET for $($scopes.Count) selected source(s); does not prove event ingestion." +
+            $(if ($allCoverageUnknown) { ' Category discovery unavailable: only the six reference categories were assessed, not all tenant categories.' } else { '' })
         PolicyOrDiagnosticSetting = $names -join '; '
     }
 }
@@ -2476,7 +3847,7 @@ function Get-ConnectorRequirementReview($Record, $Evidence, [object[]]$Actions) 
     } elseif ($diagnostic) {
         Add-RequirementStage 'DiagnosticSettings' $true $sourceState 'Reviewed Azure Monitor/source diagnostic APIs configure selected categories to this workspace, retaining other settings and destinations.' @() $proof
         $inputs = switch ($key) {
-            EntraDiagnostics { @('Entra licensing/active tenant role for all advertised log categories by default; successful category discovery and potentially increased ingestion costs') }
+            EntraDiagnostics { @('Entra licensing/active tenant role; All uses six reference categories if discovery is unavailable, with additional categories requiring review; ingestion costs may increase') }
             AzureActivity { @('Approved SourceSubscriptionIds and diagnosticSettings read/write permission') }
             AzureStorageAccount { @('Existing blob/file/queue/table resources and approved SourceSubscriptionIds/DiagnosticResourceIds; service requests must generate logs') }
             AzureNSG { @('Approved NSG sources; diagnostic events/counters are not Network Watcher flow logs') }
@@ -2627,6 +3998,22 @@ function Get-ConnectorDisplaySummary($Row, [array]$Actions) {
     [pscustomobject]@{ Connector = $name; State = $state; ThisRun = $result; NextStep = $next }
 }
 
+function Add-ContentHubPackageDiagnosticRows {
+    if (-not (Get-Variable ContentHubPackageDiagnostics -Scope Script -ErrorAction SilentlyContinue)) { return }
+    foreach ($diagnostic in @($script:ContentHubPackageDiagnostics.Values)) {
+        $issues = @($diagnostic.Artifacts | Where-Object Outcome -notin @('Present', 'SharedPresent'))
+        $installationStatus = Get-ContentHubField $diagnostic 'InstallationStatus'
+        $status = if ($diagnostic.State -in @('Missing', 'ReadFailed') -or @($issues | Where-Object Outcome -eq 'ReadFailed').Count) { 'Failed' }
+            elseif ($diagnostic.State -in @('Unverified', 'NotFullyInspected', 'Pending') -or ($installationStatus -and $installationStatus -ne 'Installed')) { 'ActionRequired' } else { 'Verified' }
+        Add-ConnectorResult "Content Hub package / $($diagnostic.Solution)" $status $diagnostic.Detail 'Inspect PackageEvidence.Artifacts for exact expected/observed IDs, versions and GET results. Use -ContentStatusOnly -ConnectorReportPath <file.json> to collect read-only evidence; no reinstall is required to diagnose.' @{
+            Attempted = $false; Verified = $null; ConnectorStatus = 'Not applicable (package verification)'
+        }
+        $row = $script:ConnectorReport[$script:ConnectorReport.Count - 1]
+        $row.RowType = 'Package'
+        $row | Add-Member PackageEvidence $diagnostic
+    }
+}
+
 function Write-ConnectorReport {
     $connectorOutcomes = $script:ConnectorReport.ToArray()
     $actions = @($connectorOutcomes | Where-Object RowType -eq 'Action')
@@ -2637,6 +4024,9 @@ function Write-ConnectorReport {
     Write-Host 'Current state and this-run results are separate. Configured does not confirm incoming data.'
     if (-not @($actions | Where-Object { $_.WriteAttempted -and $_.ConfigurationStage -ne 'Policy' }).Count) {
         Write-Host 'No connector configuration writes were attempted in this run.' -ForegroundColor Yellow
+        if (-not (Get-Variable ContentStatusOnly -ValueOnly -ErrorAction SilentlyContinue) -and @($connectorOutcomes | Where-Object { $_.RowType -eq 'Package' -and $_.Status -eq 'Failed' }).Count) {
+            Write-Host 'Package verification blocked setup. Package errors are separate from connector health; see exact artifact evidence below/in JSON.' -ForegroundColor Yellow
+        }
     }
     # Stacked short lines avoid Cloud Shell dropping rightmost table columns.
     foreach ($item in $summary) {
@@ -2655,7 +4045,24 @@ function Write-ConnectorReport {
         Step 'Analytics rules (not connector failures)'
         Write-Host "$(@($content | Where-Object Status -eq 'Failed').Count) rule deployment(s) failed. See Content rows in the detailed report." -ForegroundColor Yellow
     }
-    $failures = @($connectorOutcomes | Where-Object { $_.Status -eq 'Failed' -and $_.RowType -ne 'Content' })
+    $packages = @($connectorOutcomes | Where-Object RowType -eq 'Package')
+    if ($packages.Count) {
+        Step 'Content Hub package verification (separate from connectors)'
+        Write-Host "$($packages.Count) packages checked | Failed: $(@($packages | Where-Object Status -eq 'Failed').Count) | Partial/review: $(@($packages | Where-Object Status -eq 'ActionRequired').Count)"
+        foreach ($row in $packages) {
+            $shared = @($row.PackageEvidence.Artifacts | Where-Object Outcome -eq 'SharedPresent')
+            if ($shared.Count) { Write-Host "$($row.PackageEvidence.Solution): $($shared.Count) SharedPresent (verified shared packaged templates; not runtime configuration/ingestion)." }
+        }
+        foreach ($row in @($packages | Where-Object Status -eq 'Failed')) {
+            Write-Host "$($row.PackageEvidence.Solution): $($row.PackageEvidence.Missing.Count) missing/outdated/conflicting artifact(s)." -ForegroundColor Yellow
+            foreach ($artifact in @($row.PackageEvidence.Artifacts | Where-Object Outcome -notin @('Present', 'SharedPresent') | Select-Object -First 3)) {
+                $identity = if ($artifact.ExpectedResourceId) { ($artifact.ExpectedResourceId -split '/')[-1] } else { $artifact.ExpectedContentId }
+                Write-Host "  $($artifact.Collection)/$identity [$($artifact.Outcome)]: $($artifact.Reason)"
+            }
+        }
+        Write-Host 'Exact expected and observed IDs/parents/versions/API read results are retained in Package rows of the JSON report; no connector credentials or template/query bodies are exported.'
+    }
+    $failures = @($connectorOutcomes | Where-Object { $_.Status -eq 'Failed' -and $_.RowType -notin @('Content', 'Package') })
     if ($failures.Count) {
         Step 'Setup / status-check failures'
         foreach ($row in $failures) {
@@ -2801,29 +4208,16 @@ function Invoke-NewConnectorConfiguration($BeforeSnapshot, $AfterSnapshot) {
                 }
                 'EntraDiagnostics' {
                     Invoke-ConnectorWork $label {
-                        $discoveryUnavailable = $false
-                        $available = @()
-                        try {
-                            $available = @(Read-ArmList '/providers/microsoft.aadiam/diagnosticSettingsCategories?api-version=2017-04-01' | ForEach-Object { $_.name })
-                        } catch {
-                            if ($_.Exception.Data['ArmStatusCode'] -notin @(400, 404, 405)) { throw }
-                            $discoveryUnavailable = $true
-                        }
-                        if ($discoveryUnavailable -and $EntraLogCategories -contains 'All') {
-                            Add-ConnectorResult $label 'ActionRequired' 'Entra category discovery is unavailable; All cannot be expanded safely. No Entra settings changed.' 'Rerun with explicit -EntraLogCategories values.'
-                            return
-                        }
-                        $requested = @(& { if ($EntraLogCategories -contains 'All') { $available } else { $EntraLogCategories } } | Select-Object -Unique)
-                        if ($requested.Count -eq 0) { throw 'No Entra diagnostic log categories were returned or selected; no settings changed.' }
-                        if (-not $discoveryUnavailable) {
-                            $missing = @($requested | Where-Object { $_ -notin $available })
-                            if ($missing.Count -gt 0) { throw "Unavailable Entra categories: $($missing -join ', ')" }
-                        }
+                        $selection = Get-EntraLogSelection
+                        $requested = @($selection.Categories)
                         Write-Host "Microsoft Entra ID: requesting $($requested.Count) log categories: $($requested -join ', ')."
-                        if ($EntraLogCategories -contains 'All') {
-                            Write-Warning 'All available Entra log categories are selected. Category-specific licenses/permissions and additional ingestion charges may apply.'
-                        }
+                        Write-Verbose 'Entra diagnosticSettings PUT uses category/enabled pairs and the selected workspace ARM resource ID; category-specific licenses/permissions and ingestion charges apply.'
                         Enable-DiagnosticConnector "$label / tenant $script:TenantId" '' $requested -Entra
+                        if ($selection.UsedReferenceFallback) {
+                            Add-ConnectorResult "$label / additional log categories" 'ActionRequired' 'The six reference log categories were requested and assessed; ALL tenant category coverage could not be verified because category discovery is unavailable.' 'Review other Entra log types in the portal or supply their diagnostic category IDs explicitly using -EntraLogCategories. Do not use Log Analytics table names.' @{
+                                ConnectorStatus = 'Additional categories unverified'
+                            }
+                        }
                     }
                 }
                 'AzureActivity' {
@@ -2907,41 +4301,31 @@ function Invoke-NewConnectorConfiguration($BeforeSnapshot, $AfterSnapshot) {
 Step 'Prerequisites'
 if ($PSVersionTable.PSVersion -lt [version]'7.2') { throw 'PowerShell 7.2+ is required.' }
 'Az.Accounts', 'Az.Resources', 'Az.OperationalInsights' | ForEach-Object { Ensure-Module $_ }
-if (-not $ConnectorStatusOnly -and -not $ConfigureConnectorsOnly -and -not (Get-Command git -ErrorAction SilentlyContinue)) { throw 'git is unavailable.' }
+if (-not $ConnectorStatusOnly -and -not $ContentStatusOnly -and -not $ConfigureConnectorsOnly -and -not (Get-Command git -ErrorAction SilentlyContinue)) { throw 'git is unavailable.' }
 Ensure-AzureLogin
 
 Step 'Select target environment'
-if ($SubscriptionId) {
-    $script:SubscriptionId = ([guid]::Parse($SubscriptionId)).ToString()
-} else {
-    $subscriptions = @(Get-AzSubscription | Where-Object State -eq 'Enabled' | Sort-Object Name)
-    Write-Host 'Available subscriptions:' -ForegroundColor Cyan
-    $subscription = Select-ItemNumber $subscriptions { param($item) "$($item.Name) [$($item.Id)]" } 'Select subscription number'
-    $script:SubscriptionId = [string]$subscription.Id
-}
-$context = Set-AzContext -SubscriptionId $script:SubscriptionId -ErrorAction Stop
+$target = Select-SentinelTarget $SubscriptionId $ResourceGroupName $WorkspaceName
+$script:SubscriptionId = $target.SubscriptionId
+$context = $target.Context
 $script:TenantId = [string]$context.Tenant.Id
 $script:ArmEndpoint = [uri]$context.Environment.ResourceManagerUrl
-if ($ResourceGroupName) {
-    $resourceGroup = Get-AzResourceGroup -Name $ResourceGroupName -ErrorAction Stop
-} else {
-    $resourceGroups = @(Get-AzResourceGroup | Sort-Object ResourceGroupName)
-    Write-Host "`nAvailable resource groups:" -ForegroundColor Cyan
-    $resourceGroup = Select-ItemNumber $resourceGroups { param($item) "$($item.ResourceGroupName) [$($item.Location)]" } 'Select resource group number'
-}
+$resourceGroup = $target.ResourceGroup
 $script:ResourceGroup = [string]$resourceGroup.ResourceGroupName
-if ($WorkspaceName) {
-    $workspace = Get-AzOperationalInsightsWorkspace -ResourceGroupName $script:ResourceGroup -Name $WorkspaceName -ErrorAction Stop
-} else {
-    $workspaces = @(Get-AzOperationalInsightsWorkspace -ResourceGroupName $script:ResourceGroup | Sort-Object Name)
-    Write-Host "`nAvailable Log Analytics workspaces:" -ForegroundColor Cyan
-    $workspace = Select-ItemNumber $workspaces { param($item) $location = Safe-Prop $item 'Location'; if (-not $location) { $location = Safe-Prop $item 'ResourceLocation' }; if (-not $location) { $location = 'region resolved after selection' }; "$($item.Name) [$location]" } 'Select Sentinel workspace number'
-}
+$workspace = $target.Workspace
 $script:Workspace = [string]$workspace.Name
 $script:Region = Workspace-Region $workspace $script:SubscriptionId $script:ResourceGroup $script:Workspace
 $script:WorkspaceId = "/subscriptions/$script:SubscriptionId/resourceGroups/$script:ResourceGroup/providers/Microsoft.OperationalInsights/workspaces/$script:Workspace"
 $script:SentinelId = "$script:WorkspaceId/providers/Microsoft.SecurityInsights"
-Write-Host "Selected workspace: $script:Workspace" -ForegroundColor Green
+$selectedResourceId = [string](Safe-Prop $workspace 'ResourceId')
+if ($selectedResourceId -and $selectedResourceId -ne $script:WorkspaceId) { throw 'Selected workspace object does not match the canonical subscription/resource-group/workspace target.' }
+if ([string]$context.Subscription.Id -ne $script:SubscriptionId) { throw 'Selected subscription and active context disagree.' }
+$script:ContentHubExpectedTarget = @{
+    WorkspaceResourceId = $script:WorkspaceId; SubscriptionId = $script:SubscriptionId
+    TenantId = $script:TenantId; CustomerId = [string](Safe-Prop $workspace 'CustomerId')
+}
+Write-Host "Selected tenant: $script:TenantId; subscription: $script:SubscriptionId" -ForegroundColor Cyan
+Write-Host "Selected canonical workspace: $script:WorkspaceId" -ForegroundColor Green
 Write-Host "Detected region: $script:Region" -ForegroundColor Green
 $onboard = "$script:SentinelId/onboardingStates/default?api-version=$ApiVersion"
 if ((Invoke-AzRestMethod -Method GET -Path $onboard).StatusCode -ne 200) { throw 'Microsoft Sentinel onboarding was not confirmed.' }
@@ -2956,7 +4340,11 @@ $runError = $null
 $reportError = $null
 $noAttemptReason = 'No configuration action recorded for this connector; this inventory observation is not a configuration success.'
 try {
-if ($ConnectorStatusOnly) {
+if ($ContentStatusOnly) {
+    $noAttemptReason = 'Read-only package diagnostics requested. No package installation or connector configuration was attempted.'
+    Step 'Read-only package artifact diagnostics (no installation or configuration)'
+    $null = Confirmed-ContentHubPackageNames $RequestedSolutions -DiagnosticOnly
+} elseif ($ConnectorStatusOnly) {
     $noAttemptReason = 'Read-only connector status requested. Content Hub deployment and connector configuration were not attempted.'
 } elseif ($ConfigureConnectorsOnly) {
     Step 'Configure already-installed connectors without Content Hub or analytics-rule deployment'
@@ -2998,11 +4386,11 @@ Write-Host "Requested: $($RequestedSolutions.Count); deployable: $($deployable.C
 
 Invoke-ContentHubDeploymentPhase @($deployable) 'Install all available requested solutions and packaged content'
 
-Step 'Verify installed packages and retry missing packages'
-$installed = Installed-Names
+Step 'Verify installed package versions and supported artifact checks; retry missing packages'
+$installed = Confirmed-ContentHubPackageNames @($deployable)
 $missing = [Collections.Generic.List[string]]::new()
 foreach ($name in $deployable) {
-    if ($installed.Contains($name)) { Write-Host "Confirmed installed: $name" -ForegroundColor Green }
+    if ($installed.Contains($name)) { Write-Host "Verified installed package version: $name (artifact inspection/runtime outcomes reported separately)" -ForegroundColor Green }
     else {
         $missing.Add($name)
         Write-Warning "Not confirmed: $name"
@@ -3012,7 +4400,7 @@ for ($round = 1; $round -le $MaxRetryAttempts -and $missing.Count -gt 0; $round+
     $retry = @($missing)
     $missing.Clear()
     Invoke-ContentHubDeploymentPhase $retry "Retry round $round of $MaxRetryAttempts"
-    $installed = Installed-Names
+    $installed = Confirmed-ContentHubPackageNames $retry
     foreach ($name in $retry) {
         if ($installed.Contains($name)) { Write-Host "Confirmed after retry: $name" -ForegroundColor Green }
         else { $missing.Add($name) }
@@ -3028,7 +4416,7 @@ if ($missing.Count -eq 0) {
 
 Step 'Final report'
 Write-Host "Requested packages: $($RequestedSolutions.Count)"
-Write-Host "Confirmed installed packages: $($deployable.Count - $missing.Count)" -ForegroundColor Green
+Write-Host "Verified installed package versions: $($deployable.Count - $missing.Count)" -ForegroundColor Green
 Write-Host "Intentionally skipped packages: $($skipped.Count)" -ForegroundColor Yellow
 if ($skipped.Count -gt 0) { Write-Warning ($skipped -join ', ') }
 Write-Host "Unconfirmed packages after retries: $($missing.Count)" -ForegroundColor $(if ($missing.Count -gt 0) { 'Red' } else { 'Green' })
@@ -3036,16 +4424,22 @@ if ($missing.Count -gt 0) {
     Write-Warning ($missing -join ', ')
     throw 'Some Content Hub packages remain unconfirmed. Connector configuration was not attempted.'
 }
-Write-Host 'All available requested solutions were confirmed installed.' -ForegroundColor Green
+Write-Host 'Requested package versions were verified in this workspace. Detailed artifact checks, runtime rules/workbooks and connector/source ingestion have separate outcomes above.' -ForegroundColor Green
 }
 } catch {
     $runError = $_
     $noAttemptReason = 'No connector configuration action was recorded before the run stopped. Deployment/configuration encountered an error; this is not proof of connector failure.'
+    if ($ContentStatusOnly) {
+        $noAttemptReason = 'Read-only diagnostics encountered a read error. Connector setup was not requested; any partial package evidence is retained in Package rows.'
+    } elseif (@($script:ContentHubPackageDiagnostics.Values | Where-Object { $_.State -in @('Missing', 'ReadFailed') -or @($_.Artifacts | Where-Object Outcome -eq 'ReadFailed').Count }).Count) {
+        $noAttemptReason = 'Connector configuration was not attempted because package verification blocked this run. See the separate Package rows and exact artifact evidence; this is not a connector failure. Collect read-only evidence with -ContentStatusOnly.'
+    }
     Write-Warning 'Deployment or setup stopped before completion. Connector status will still be shown below; this does not mean all connectors failed.'
     Write-Verbose "Run error: $($_.Exception.Message)"
 } finally {
     $script:CurrentRecord = $null
     $script:Operation = @{}
+    Add-ContentHubPackageDiagnosticRows
     foreach ($failure in @($script:ContentHubRuleFailures.Values)) {
         $label = if ($failure.RuleName) { $failure.RuleName } else { $failure.ResourceId.Split('/')[-1] }
         Add-ConnectorResult "Analytics rule / $label" 'Failed' "HTTP $($failure.HttpStatus); AzureCode=$($failure.AzureErrorCode); $($failure.Reason); requestId=$($failure.RequestId); resource=$($failure.ResourceId)" 'Rule deployment did not succeed. Resolve validation/source prerequisites and rerun; connector actions are reported separately.' @{
@@ -3072,7 +4466,7 @@ Write-Host 'All available requested solutions were confirmed installed.' -Foregr
 }
 if ($runError) { throw $runError }
 if ($reportError) { throw $reportError }
-$failedConnectors = @($script:ConnectorReport | Where-Object { $_.Status -eq 'Failed' -and $_.RowType -ne 'Content' })
+$failedConnectors = @($script:ConnectorReport | Where-Object { $_.Status -eq 'Failed' -and $_.RowType -notin @('Content', 'Package') })
 if ($failedConnectors.Count -gt 0) {
     Write-Warning "$($failedConnectors.Count) connector configuration operation(s) failed. Review ErrorMessage, NextSteps and any JSON report."
     if ($FailOnConnectorError) {
