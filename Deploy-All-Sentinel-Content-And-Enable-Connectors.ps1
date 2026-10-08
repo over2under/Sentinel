@@ -255,6 +255,7 @@ $RequestedSolutions = @(
     'Microsoft Purview Insider Risk Management'
     'Microsoft Defender Threat Intelligence'
     'Threat Analysis & Response'
+    'UEBA Essentials'
 )
 $Severities = @('High', 'Medium', 'Low', 'Informational')
 
