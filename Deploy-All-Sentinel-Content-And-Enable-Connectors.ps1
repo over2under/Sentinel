@@ -15,6 +15,12 @@ installation; supported owned-artifact checks can repair demonstrably missing co
 Local ARM expression inspection is supplementary, never a prerequisite for first
 installation or upgrading. ARM validates parameter/reference expressions, and the
 script verifies terminal deployment success plus the installed package ID/version.
+Fresh installs and upgrades share schema-validated manifest preparation, including
+JSON-string and ARM 2.0 symbolic-resource packages. Only declared workspace/region
+parameters are supplied; other declared defaults remain with ARM. Missing manifests
+never become registration-only installs. An explicit empty resource collection can
+register a content-free package. Current/newer versions are not reinstalled or
+downgraded; verified missing owned artifacts use selective repair.
 Unknown installed versions require review (no speculative downgrade). An unavailable
 package body cannot be replaced with a registration-only write. Detailed artifact
 checks may be partial; this is reported separately from verified installation.
@@ -67,6 +73,14 @@ manual review. GrantConnectorPolicyRoles and RemediateConnectorPolicies separate
 authorize privileged identity grants and asynchronous remediation. No rollback is
 promised; assignment acceptance never means source configuration or ingestion.
 Defaults: source subscription is the workspace subscription; Entra requests All.
+Diagnostic setup first verifies enabled log coverage to this exact Sentinel
+workspace. A covering existing setting, or complementary settings together, is
+AlreadyConfigured and its names are reported, even if all five slots are occupied.
+Only missing categories are added in a new setting when fewer than five exist.
+At five settings, missing coverage is ActionRequired: no existing setting is
+deleted, overwritten, redirected or adopted. Existing metrics, routing, retention
+and additional destinations remain untouched. Coverage/count/name are rechecked
+before creation; Azure still enforces the limit if another writer races this run.
 If Entra category discovery is unavailable, the six reference log categories are
 configured and additional-category coverage is explicitly reported as unverified.
 Existing Storage/NSG/Purview sources are discovered in selected source
@@ -75,14 +89,32 @@ DiagnosticResourceIds before applying. Use WhatIf to preview connector writes.
 Requires Azure resource read/write privileges for the selected resources, Sentinel
 Contributor, and source-specific licensing, tenant permissions and consent. No
 source permissions, agents, audit licensing or consent are granted automatically.
+Missing Az.Accounts, Az.Resources and Az.OperationalInsights modules are installed
+from the official PSGallery into CurrentUser, including in Cloud Shell.
+Preview deployment additionally installs Microsoft.Graph.Authentication as needed.
+Healthy installed modules are reused. PSGallery registration and the NuGet provider
+are bootstrapped only when installation is needed; repository trust is not changed.
+PowerShell 7.2+ and Git are host requirements (both supplied by PowerShell Cloud Shell);
+this script does not replace its own runtime or install operating-system packages.
+WhatIf never installs/updates dependencies and stops explicitly if one is missing.
 After deployment/configuration, including on failure, read and report ALL installed
 connector records. Inventory observations do not prove event ingestion; Action
 rows separately record this run's configuration successes, failures and setup needs.
+Every run creates a unique text transcript, including preview/status-only runs.
+It captures displayed output, deployment warnings and fatal errors; it is separate
+from the structured connector JSON report. Treat logs as sensitive operational data.
+Review/redact before sharing; transcripts are not a credential-redaction boundary.
 .PARAMETER ConnectorStatusOnly
 Skip repository preparation, Content Hub deployment and connector configuration.
 Read installed connector/native/diagnostic status and optionally save the JSON report.
 No Azure resources are written by this mode. Unknown means status is not verifiable
 by an implemented adapter, not that the connector is disconnected.
+.PARAMETER InstallPrerequisitesOnly
+Install/import all four required PowerShell modules, including Graph authentication,
+and check the built-in Git prerequisite, then stop before Azure/Graph sign-in,
+target selection, cloning or any cloud writes. Use this for dependency-only setup.
+Licenses, Defender onboarding, Azure/Defender roles and admin consent are not
+software dependencies and are never granted or purchased by this mode.
 .PARAMETER ContentStatusOnly
 Read package registrations and supported packaged-artifact evidence without cloning
 the repository, installing content or configuring connectors. Target selection and
@@ -96,7 +128,39 @@ apply. Mutually exclusive with the two read-only modes. Does not repair failed r
 .PARAMETER ConnectorReportPath
 Optional local JSON report file with full actions, errors, requirements and Package
 rows containing exact safe artifact diagnostics (including after deployment failure).
+Content rows retain package/API failures even when the upstream deployer exits early;
+local resource-preflight failures include the offending structural path, not credentials.
 The terminal shows a compact connector summary; use -Verbose for technical detail.
+.PARAMETER LogPath
+Optional text log filename. Default: a unique timestamped file under
+$HOME/clouddrive/Sentinel-Logs when Cloud Shell persistent storage is mounted,
+otherwise ./Sentinel-Logs in the current directory. The resolved path is displayed
+at startup. Missing parent directories are created; existing files are never
+overwritten or appended. Logging starts before prerequisites/target selection and
+stops on success or failure. Use -Verbose to include additional technical output.
+Logs are also written with -WhatIf; that previews Azure writes, not local logging.
+Parameter-binding, syntax and #Requires failures occur before logging can start.
+An unwritable log path stops the run before Azure changes.
+.PARAMETER DeployPreviewDetections
+Opt into separately deploying scheduled MicrosoftSecurity preview custom detections
+from the selected official packages through Microsoft Graph beta. Standard package
+installation explicitly uses E5Flavor=false; inactive preview nested deployments
+are not submitted. New Graph rules remain disabled. Existing unowned, enabled or
+externally changed rules are preserved. Installs/imports Microsoft.Graph.Authentication
+when needed; requires delegated CustomDetection.ReadWrite.All, appropriate
+active Defender/Sentinel roles, Defender onboarding and licensing. No roles/consent
+are granted automatically; Graph sign-in requires explicit interactive approval.
+WhatIf reads package definitions but never signs in to Graph or writes rules/state.
+.PARAMETER UpdateOwnedPreviewDetections
+With DeployPreviewDetections, permit individually approved updates of unchanged,
+journal-owned disabled rules. This never adopts an existing rule or enables one.
+Graph PATCH has no assumed conditional-write guarantee: keep other rule writers
+quiescent. No automatic rollback/deletion; ambiguous writes require manual review.
+.PARAMETER PreviewDetectionStatePath
+Optional JSON ownership journal for preview detections. Keep the same file across
+runs. It records stable rule IDs and configuration hashes, not queries or credentials.
+Pending/failed writes are not silently retried or adopted. Use persistent Cloud Shell
+storage and retain the journal; do not share it between concurrent deployments.
 .PARAMETER EntraLogCategories
 Defaults to All. Tries tenant category discovery, but HTTP 400/404/405 or an empty
 category list no longer blocks setup: uses AuditLogs, SignInLogs,
@@ -171,6 +235,7 @@ param(
     [string]$ResourceGroupName,
     [string]$WorkspaceName,
     [string]$RepoPath,
+    [switch]$InstallPrerequisitesOnly,
     [string[]]$SourceSubscriptionIds = @(),
     [ValidateNotNullOrEmpty()]
     [string[]]$EntraLogCategories = @('All'),
@@ -193,6 +258,11 @@ param(
     [ValidateRange(0, 30)]
     [int]$ThreatIntelLookbackDays = 0,
     [string]$ConnectorReportPath,
+    [ValidateNotNullOrEmpty()]
+    [string]$LogPath,
+    [switch]$DeployPreviewDetections,
+    [switch]$UpdateOwnedPreviewDetections,
+    [string]$PreviewDetectionStatePath,
     # Read-only Azure inventory; skips Content Hub deployment and connector writes.
     [switch]$ConnectorStatusOnly,
     [switch]$ContentStatusOnly,
@@ -203,9 +273,46 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+
+function Start-SentinelRunLog([string]$Path) {
+    if (-not $Path) {
+        $cloudDrive = Join-Path $HOME 'clouddrive'
+        $root = if (Test-Path -LiteralPath $cloudDrive -PathType Container) { $cloudDrive } else { $PWD.Path }
+        $filename = 'sentinel-deployment-{0}-{1}.log' -f [DateTime]::UtcNow.ToString('yyyyMMdd-HHmmss-fff'), [guid]::NewGuid().ToString('N')
+        $Path = Join-Path (Join-Path $root 'Sentinel-Logs') $filename
+    }
+    $provider = $null; $drive = $null
+    $resolved = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($Path, [ref]$provider, [ref]$drive)
+    if ($provider.Name -ne 'FileSystem') { throw 'LogPath must be a filesystem filename.' }
+    if ($ConnectorReportPath -and $resolved -eq $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($ConnectorReportPath)) {
+        throw 'LogPath and ConnectorReportPath must be different files.'
+    }
+    if (Test-Path -LiteralPath $resolved) { throw "Log file already exists; choose a new LogPath: $resolved" }
+    $parent = Split-Path -Parent $resolved
+    if (-not (Test-Path -LiteralPath $parent -PathType Container)) {
+        $null = New-Item -ItemType Directory -Path $parent -Force -WhatIf:$false -Confirm:$false -ErrorAction Stop
+    }
+    $null = Start-Transcript -LiteralPath $resolved -NoClobber -IncludeInvocationHeader -WhatIf:$false -Confirm:$false -ErrorAction Stop
+    return $resolved
+}
+
+$runTranscriptStarted = $false
+$transcriptRunError = $null
+try {
+    $LogPath = Start-SentinelRunLog $LogPath
+    $runTranscriptStarted = $true
+    Write-Host "Run log: $LogPath" -ForegroundColor Cyan
+    Write-Host 'Default log filenames use UTC timestamps. Treat this transcript as sensitive; review/redact before sharing.'
+
 $script:ChangeCaller = $PSCmdlet
 if (@(@($ConnectorStatusOnly, $ContentStatusOnly, $ConfigureConnectorsOnly) | Where-Object { $_ }).Count -gt 1) {
     throw 'Choose one of -ContentStatusOnly, -ConnectorStatusOnly (read-only), or -ConfigureConnectorsOnly (apply supported connector setup).'
+}
+if ($UpdateOwnedPreviewDetections -and -not $DeployPreviewDetections) {
+    throw '-UpdateOwnedPreviewDetections requires -DeployPreviewDetections.'
+}
+if ($DeployPreviewDetections -and ($ConnectorStatusOnly -or $ContentStatusOnly)) {
+    throw 'Preview detection deployment cannot be combined with read-only status modes; use -WhatIf to preview it.'
 }
 
 if (-not $RepoPath) {
@@ -261,15 +368,54 @@ $Severities = @('High', 'Medium', 'Low', 'Informational')
 
 function Step([string]$Text) { Write-Host "`n=== $Text ===" -ForegroundColor Cyan }
 
-function Ensure-Module([string]$Name) {
-    $module = Get-Module -ListAvailable -Name $Name | Sort-Object Version -Descending | Select-Object -First 1
-    if (-not $module) {
-        if (Test-Path (Join-Path $HOME 'clouddrive')) {
-            throw "Missing $Name. In Azure Portal Cloud Shell, switch to PowerShell mode or restart Cloud Shell so the built-in Az modules are loaded."
+function Initialize-SentinelModuleInstaller {
+    foreach ($command in @('Install-Module', 'Get-PSRepository', 'Register-PSRepository', 'Get-PackageProvider', 'Install-PackageProvider')) {
+        if (-not (Get-Command $command -ErrorAction SilentlyContinue)) {
+            throw "PowerShell dependency installer command $command is unavailable. Use PowerShell 7.2+ Cloud Shell with PowerShellGet/PackageManagement; no cloud setup was attempted."
         }
-        Install-Module -Name $Name -Scope CurrentUser -Repository PSGallery -Force -AllowClobber
     }
-    Import-Module $Name -Force -ErrorAction Stop
+    $repository = Get-PSRepository -Name PSGallery -ErrorAction SilentlyContinue
+    if (-not $repository) {
+        Write-Host 'Registering the default PowerShell Gallery for dependency installation.' -ForegroundColor Cyan
+        Register-PSRepository -Default -ErrorAction Stop
+        $repository = Get-PSRepository -Name PSGallery -ErrorAction Stop
+    }
+    if ($repository.SourceLocation -notmatch '^https://www\.powershellgallery\.com/api/v2/?$') {
+        throw 'PSGallery points to an unexpected source. Correct its registration manually; dependencies will not be downloaded from an unverified repository.'
+    }
+    $provider = @(Get-PackageProvider -Name NuGet -ListAvailable -ErrorAction SilentlyContinue |
+        Where-Object { $_.Version -ge [version]'2.8.5.201' })
+    if (-not $provider.Count) {
+        Write-Host 'Installing the NuGet provider for CurrentUser.' -ForegroundColor Cyan
+        Install-PackageProvider -Name NuGet -MinimumVersion '2.8.5.201' -Scope CurrentUser -Force -ErrorAction Stop | Out-Null
+    }
+}
+
+function Ensure-Module([string]$Name, [string[]]$RequiredCommands = @()) {
+    $module = Get-Module -ListAvailable -Name $Name | Sort-Object Version -Descending | Select-Object -First 1
+    $install = $null -eq $module
+    if ($module) {
+        Import-Module $Name -Force -ErrorAction Stop
+        $install = @($RequiredCommands | Where-Object { -not (Get-Command $_ -Module $Name -ErrorAction SilentlyContinue) }).Count -gt 0
+    }
+    if ($install) {
+        if ($WhatIfPreference) {
+            throw "Dependency $Name is missing or lacks required commands. WhatIf does not install modules; run -InstallPrerequisitesOnly without -WhatIf first."
+        }
+        Initialize-SentinelModuleInstaller
+        Write-Host "Installing/updating dependency $Name from PSGallery (CurrentUser)." -ForegroundColor Cyan
+        $arguments = @{ Name = $Name; Scope = 'CurrentUser'; Repository = 'PSGallery'; Force = $true
+            AllowClobber = $true; ErrorAction = 'Stop' }
+        if ((Get-Command Install-Module -ErrorAction Stop).Parameters.ContainsKey('AcceptLicense')) { $arguments.AcceptLicense = $true }
+        Install-Module @arguments
+        Import-Module $Name -Force -ErrorAction Stop
+    }
+    foreach ($command in $RequiredCommands) {
+        if (-not (Get-Command $command -Module $Name -ErrorAction SilentlyContinue)) {
+            throw "$Name still lacks required command $command after dependency setup. Restart PowerShell if an older assembly is loaded, then rerun; no cloud setup was attempted."
+        }
+    }
+    Write-Host "Dependency ready: $Name" -ForegroundColor Green
 }
 
 function Ensure-AzureLogin {
@@ -462,7 +608,7 @@ function Read-ArmList([string]$Path) {
     while ($Path) {
         if (-not $seen.Add($Path)) { throw 'ARM returned a repeated pagination link.' }
         $page = Read-Arm $Path
-        if ($null -eq $page -or -not $page.Contains('value')) { throw "Missing collection in $Path" }
+        if ($null -eq $page -or -not $page.Contains('value') -or $page.value -isnot [array]) { throw "Missing or invalid collection in $Path; resource absence cannot be inferred." }
         foreach ($item in $page.value) { $item }
         $Path = [string](Get-Field $page 'nextLink' '')
     }
@@ -534,6 +680,145 @@ function Confirmed-ContentHubPackageNames([string[]]$Names, [switch]$DiagnosticO
 # Upstream passes a startup-only bearer header to every request. Do not use it:
 # Az.Accounts obtains/renews ARM credentials through the existing Azure context.
 # This adapter is installed only in a temporary copy of the Content Hub deployer.
+function Get-ContentHubResourceCondition($Resource, $Template, $ParameterValues = $null) {
+    $condition = Get-ContentHubField $Resource 'condition' '__absent__'
+    if ($condition -ceq '__absent__') { return $true }
+    if ($condition -is [bool]) { return $condition }
+    if ($condition -isnot [string]) { return $null }
+    $negate = $false
+    if ($condition -match "^\[parameters\('([a-zA-Z0-9_-]+)'\)\]$") { $name = $Matches[1] }
+    elseif ($condition -match "^\[not\(parameters\('([a-zA-Z0-9_-]+)'\)\)\]$") { $name = $Matches[1]; $negate = $true }
+    else { return $null }
+    $spec = Get-ContentHubField (Get-ContentHubField $Template 'parameters') $name
+    if ((Get-ContentHubField $spec 'type') -ne 'bool') { return $null }
+    $entry = Get-ContentHubField $ParameterValues $name
+    $value = if ($null -ne $entry) { Get-ContentHubField $entry 'value' } else { Get-ContentHubField $spec 'defaultValue' }
+    if ($value -isnot [bool]) { return $null }
+    if ($negate) { return -not $value }
+    return $value
+}
+
+function Assert-ContentHubPackageResources($Template, [string]$Path = 'template', [int]$Depth = 0, $ParameterValues = $null) {
+    function Stop-PackagePreflight([string]$Reason) {
+        $failure = [InvalidOperationException]::new("Package resource preflight failed: $Reason No deployment submitted.")
+        $failure.Data['ContentHubPreflightReason'] = $Reason
+        throw $failure
+    }
+    if ($Depth -gt 64) { Stop-PackagePreflight "$Path exceeds the supported nesting depth." }
+    if ($null -eq $Template -or ($Template -isnot [Collections.IDictionary] -and $Template -isnot [pscustomobject])) {
+        Stop-PackagePreflight "$Path must be a JSON object."
+    }
+    $resources = Get-ContentHubField $Template 'resources' -NoEnumerate
+    if ($null -eq $resources) { return }
+    if ($resources -is [array]) {
+        $entries = $resources
+    } elseif ($resources -is [Collections.IDictionary] -or $resources -is [pscustomobject]) {
+        if ((Get-ContentHubField $Template 'languageVersion') -ne '2.0') {
+            Stop-PackagePreflight "$Path.resources is an object; symbolic resources require languageVersion 2.0."
+        }
+        # ARM 2.0 resources are keyed by symbolic name, not an array of resources.
+        $entries = @(if ($resources -is [Collections.IDictionary]) { $resources.Values } else {
+            $resources.PSObject.Properties | ForEach-Object Value
+        })
+    } else { Stop-PackagePreflight "$Path.resources must be an array or an ARM 2.0 symbolic resource object." }
+    $index = 0
+    foreach ($resource in $entries) {
+        $resourcePath = "$Path.resources[$index]"
+        $index++
+        if ($resource -isnot [Collections.IDictionary] -and $resource -isnot [pscustomobject]) {
+            Stop-PackagePreflight "$resourcePath must be a JSON resource object."
+        }
+        $condition = Get-ContentHubResourceCondition $resource $Template $ParameterValues
+        if ($condition -is [bool] -and -not $condition) { continue }
+        $type = Get-ContentHubField $resource 'type'
+        if ($type -isnot [string] -or $type -notmatch '^[a-zA-Z0-9.]+(?:/[a-zA-Z0-9.-]+)+$') {
+            Stop-PackagePreflight "$resourcePath.type is missing, empty or not a supported literal ARM resource type."
+        }
+        if ($type -match 'Microsoft\.(Logic|Web/connections|Authorization|Resources/deploymentScripts)') {
+            Stop-PackagePreflight "$resourcePath contains a prohibited executable resource type."
+        }
+        if ($type -match '(^|/)alertRules$' -and (Get-ContentHubField $resource 'kind') -eq 'NRT') {
+            Stop-PackagePreflight "$resourcePath contains an executable NRT rule; inert content templates are permitted."
+        }
+        if ($type -match '(^|/)(alertRules|workbooks|workflows|connections)$') {
+            Stop-PackagePreflight "$resourcePath contains executable content outside the identity-checked deployer."
+        }
+        if ($type -match '(^|/)deployments$') {
+            $properties = Get-ContentHubField $resource 'properties'
+            if ($null -eq $properties -or ($properties -isnot [Collections.IDictionary] -and $properties -isnot [pscustomobject])) {
+                Stop-PackagePreflight "$resourcePath.properties must be an inline deployment object."
+            }
+            if ((Get-ContentHubField $properties 'templateLink' '__absent__') -ne '__absent__') {
+                Stop-PackagePreflight "$resourcePath contains a linked deployment; an inspectable inline template is required."
+            }
+            $inline = Get-ContentHubField $properties 'template'
+            if ($null -eq $inline -or ($inline -isnot [Collections.IDictionary] -and $inline -isnot [pscustomobject]) -or
+                $null -eq (Get-ContentHubField $inline 'resources' -NoEnumerate)) {
+                Stop-PackagePreflight "$resourcePath requires an inspectable inline ARM template with resources."
+            }
+            Assert-ContentHubPackageResources $inline "$resourcePath.properties.template" ($Depth + 1)
+        }
+        # Child ARM resources are executable; properties.mainTemplate remains inert.
+        Assert-ContentHubPackageResources $resource $resourcePath ($Depth + 1) $ParameterValues
+    }
+}
+
+function Initialize-ContentHubPackageTemplate($Template) {
+    if ($null -eq $Template) { throw 'The catalog returned no deployable package manifest. No content registration or deployment submitted.' }
+    try {
+        $json = if ($Template -is [string]) { $Template } else { ConvertTo-Json -InputObject $Template -Depth 100 -WarningAction Stop }
+        $copy = ConvertFrom-Json -InputObject $json -Depth 100 -ErrorAction Stop
+    } catch { throw 'Package manifest could not be read without truncation; no deployment submitted. Provider bodies and parameter values suppressed.' }
+    $resources = Get-ContentHubField $copy 'resources' -NoEnumerate
+    if ($null -eq $resources) { throw 'The catalog manifest does not declare resources. Missing content is not a registration-only solution; no write submitted.' }
+    Assert-ContentHubPackageResources $copy -ParameterValues @{ E5Flavor = @{ value = $false } }
+    function Clear-ContentHubPostDeployment($Node) {
+        $resources = Get-ContentHubField $Node 'resources' -NoEnumerate
+        $entries = @(if ($resources -is [array]) { $resources }
+            elseif ($resources -is [Collections.IDictionary]) { $resources.Values }
+            elseif ($resources -is [pscustomobject]) { $resources.PSObject.Properties | ForEach-Object Value })
+        foreach ($resource in $entries) {
+            $properties = Get-ContentHubField $resource 'properties'
+            $metadata = Get-ContentHubField (Get-ContentHubField $properties 'mainTemplate') 'metadata'
+            if ($metadata -and $metadata.PSObject.Properties['postDeployment']) { $metadata.postDeployment = $null }
+            if ((Get-ContentHubField $resource 'type') -match '(^|/)deployments$') {
+                Clear-ContentHubPostDeployment (Get-ContentHubField $properties 'template')
+            }
+            Clear-ContentHubPostDeployment $resource
+        }
+    }
+    Clear-ContentHubPostDeployment $copy
+    return $copy
+}
+
+function Get-ContentHubPackageParameters($Template, [string]$Workspace, [string]$Region) {
+    $parameters = Get-ContentHubField $Template 'parameters'
+    $result = @{}
+    if ($null -eq $parameters) { return $result }
+    if ($parameters -isnot [Collections.IDictionary] -and $parameters -isnot [pscustomobject]) {
+        throw 'Package parameter declarations must be a JSON object; no deployment submitted.'
+    }
+    $names = if ($parameters -is [Collections.IDictionary]) { @($parameters.Keys) } else { @($parameters.PSObject.Properties.Name) }
+    foreach ($name in $names) {
+        $spec = Get-ContentHubField $parameters $name
+        if ($null -eq $spec -or ($spec -isnot [Collections.IDictionary] -and $spec -isnot [pscustomobject])) {
+            throw 'Package contains an invalid parameter declaration; no deployment submitted.'
+        }
+        if ($name -eq 'E5Flavor') {
+            if ((Get-ContentHubField $spec 'type') -ne 'bool') { throw 'Package E5Flavor must be a boolean; no deployment submitted.' }
+            $result[$name] = @{ value = $false }
+        } elseif ($name -in @('workspace', 'workspace-location')) {
+            if ((Get-ContentHubField $spec 'type') -ne 'string') { throw 'Workspace package parameters must be strings; no deployment submitted.' }
+            $value = if ($name -eq 'workspace') { $Workspace } else { $Region }
+            $result[$name] = @{ value = $value }
+        } else {
+            $hasDefault = if ($spec -is [Collections.IDictionary]) { $spec.Contains('defaultValue') } else { $null -ne $spec.PSObject.Properties['defaultValue'] }
+            if (-not $hasDefault) { throw 'Package requires additional template-specific parameters without defaults; review the installed documentation and deploy that package separately. No deployment submitted.' }
+        }
+    }
+    return $result
+}
+
 function Invoke-ContentHubArmApi {
     [CmdletBinding()]
     param(
@@ -556,6 +841,7 @@ function Invoke-ContentHubArmApi {
     $reason = 'Azure validation reason not classified; inspect the rule in Sentinel.'
     $requestId = ''
     $ruleName = ''
+    $requestSubmitted = $false
     if (-not (Get-Variable ContentHubRequestDetails -Scope Script -ErrorAction SilentlyContinue)) {
         $script:ContentHubRequestDetails = @{}
     }
@@ -598,34 +884,8 @@ function Invoke-ContentHubArmApi {
         }
         if ($Method -eq 'PUT' -and $target.AbsolutePath -match '/providers/Microsoft\.Resources/deployments/[^/]+$') {
             $deployment = $Body | ConvertFrom-Json -Depth 100
-            function Assert-PackageResources($Template) {
-                if ($Template.PSObject.Properties['resources']) {
-                    foreach ($resource in $Template.resources) {
-                        $type = [string]$resource.type
-                        if ($type.StartsWith('[') -or $type -match 'Microsoft\.(Logic|Web/connections|Authorization|Resources/deploymentScripts)') {
-                            throw "Package contains a prohibited executable resource type: $type. No deployment submitted."
-                        }
-                        if ($type -match '(^|/)alertRules$' -and $resource.PSObject.Properties['kind'] -and $resource.kind -eq 'NRT') {
-                            throw 'Package contains an executable NRT rule. No deployment submitted; inert NRT content templates are permitted.'
-                        }
-                        if ($type -match '(^|/)(alertRules|workbooks|workflows|connections)$') {
-                            throw "Package contains executable $type outside the identity-checked content deployer. No deployment submitted; inert content templates are permitted."
-                        }
-                        if ($type -match '(^|/)deployments$') {
-                            if ($resource.properties.PSObject.Properties['templateLink']) { throw 'Linked package deployments are not permitted.' }
-                            if (-not $resource.properties.PSObject.Properties['template'] -or
-                                $resource.properties.template -is [string] -or
-                                -not $resource.properties.template.PSObject.Properties['resources']) {
-                                throw 'Nested package deployment requires an inspectable inline ARM template.'
-                            }
-                            Assert-PackageResources $resource.properties.template
-                        }
-                        # Stored contentTemplates are inert; do not traverse mainTemplate.
-                        Assert-PackageResources $resource
-                    }
-                }
-            }
-            Assert-PackageResources $deployment.properties.template
+            $deploymentProperties = Get-ContentHubField $deployment 'properties'
+            Assert-ContentHubPackageResources (Get-ContentHubField $deploymentProperties 'template') -ParameterValues (Get-ContentHubField $deploymentProperties 'parameters')
         }
         if ($PSBoundParameters.ContainsKey('Body')) { $request.Payload = $Body }
         $authRetried = $false
@@ -635,6 +895,7 @@ function Invoke-ContentHubArmApi {
             $response = $null
             $errorBody = ''
             try {
+                $requestSubmitted = $true
                 $response = Az.Accounts\Invoke-AzRestMethod @request
                 $status = [int]$response.StatusCode
                 if ($status -ge 400) { $errorBody = [string]$response.Content }
@@ -754,6 +1015,7 @@ function Invoke-ContentHubArmApi {
         }
     } catch {
         $script:ContentHubApiFailures++
+        if ($_.Exception.Data['ContentHubPreflightReason']) { $reason = [string]$_.Exception.Data['ContentHubPreflightReason'] }
         $requestUri = $null
         $safePath = if ([uri]::TryCreate($Uri, [UriKind]::Absolute, [ref]$requestUri)) {
             $requestUri.AbsolutePath
@@ -775,6 +1037,7 @@ function Invoke-ContentHubArmApi {
             $script:ContentHubRequestDetails[$failureKey] = [pscustomobject]@{
                 Method = $Method.ToUpperInvariant(); ResourceId = $safePath; HttpStatus = $status
                 AzureErrorCode = $serviceCode; RuleName = $ruleName; Reason = $reason; RequestId = $requestId
+                WriteAttempted = $requestSubmitted
             }
         }
         if ($missingWorkbook -or $missingArtifact) { return $null }
@@ -887,6 +1150,38 @@ function Compare-ContentHubArtifactVersion([string]$Installed, [string]$Expected
         $versions += $version
     }
     return $versions[0].CompareTo($versions[1])
+}
+
+function Sort-ContentHubTemplates($Templates) {
+    $sorted = [Collections.Generic.List[object]]::new()
+    foreach ($template in $Templates) { $sorted.Add($template) }
+    $comparer = [Collections.Generic.Comparer[object]]::Create([Comparison[object]]{
+        param($Left, $Right)
+        $leftVersion = [string](Get-ContentHubField $Left.properties 'version')
+        $rightVersion = [string](Get-ContentHubField $Right.properties 'version')
+        if ($null -eq (Compare-ContentHubArtifactVersion $leftVersion $leftVersion)) { $leftVersion = '0.0.0' }
+        if ($null -eq (Compare-ContentHubArtifactVersion $rightVersion $rightVersion)) { $rightVersion = '0.0.0' }
+        $comparison = Compare-ContentHubArtifactVersion $leftVersion $rightVersion
+        if ($null -eq $comparison) {
+            # Mixed four-part numeric and SemVer versions share a three-part base;
+            # numeric revisions sort after that base's stable release.
+            $leftRevision = [Numerics.BigInteger]::Zero
+            $rightRevision = [Numerics.BigInteger]::Zero
+            if ($leftVersion -match '^(\d+\.\d+\.\d+)\.(\d+)$') {
+                $leftVersion = $Matches[1]; $leftRevision = [Numerics.BigInteger]::Parse($Matches[2])
+            }
+            if ($rightVersion -match '^(\d+\.\d+\.\d+)\.(\d+)$') {
+                $rightVersion = $Matches[1]; $rightRevision = [Numerics.BigInteger]::Parse($Matches[2])
+            }
+            $comparison = Compare-ContentHubArtifactVersion $leftVersion $rightVersion
+            if ($null -eq $comparison) { throw 'Template versions cannot be ordered safely; review the installed versions.' }
+            if ($comparison -eq 0) { $comparison = $leftRevision.CompareTo($rightRevision) }
+        }
+        if ($comparison -ne 0) { return -$comparison }
+        return [StringComparer]::OrdinalIgnoreCase.Compare([string]$Left.name, [string]$Right.name)
+    })
+    $sorted.Sort($comparer)
+    return $sorted.ToArray()
 }
 
 function Confirm-ContentHubSelectedTarget {
@@ -1644,11 +1939,17 @@ function Get-ContentHubStableId([string]$Kind, [string]$ContentId) {
     return ([guid]::new([byte[]]$hash[0..15])).ToString()
 }
 
-function Get-ContentHubField($Object, [string]$Name) {
-    if ($null -eq $Object) { return $null }
-    if ($Object -is [Collections.IDictionary]) { return $Object[$Name] }
-    if ($Object.PSObject.Properties[$Name]) { return $Object.$Name }
-    return $null
+function Get-ContentHubField($Object, [string]$Name, $Default = $null, [switch]$NoEnumerate) {
+    $value = $Default
+    if ($null -ne $Object) {
+        if ($Object -is [Collections.IDictionary]) {
+            if ($Object.Contains($Name)) { $value = $Object[$Name] }
+        } elseif ($Object.PSObject.Properties[$Name]) {
+            $value = $Object.PSObject.Properties[$Name].Value
+        }
+    }
+    if ($NoEnumerate) { return ,$value }
+    return $value
 }
 
 function Get-ContentHubSavedWorkbooks {
@@ -1783,9 +2084,12 @@ function Update-ContentHubSource([string]$Source) {
         } elseif ($name -eq 'Get-SolutionUpdateReport') {
             $text = 'function Get-SolutionUpdateReport { param($SolutionStatuses) Write-ContentHubPackagePresenceReport $SolutionStatuses }'
         } elseif ($name -eq 'Deploy-Solution') {
-            $old = '$detailedSolution.properties.PSObject.Properties.Name -contains "packagedContent"'
-            if (-not $text.Contains($old)) { throw 'Upstream package body discovery layout changed.' }
-            $text = $text.Replace($old, '$detailedSolution.properties.PSObject.Properties["packagedContent"]')
+            $packageAssignment = @($node.FindAll({
+                param($n)
+                $n -is [Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -eq '$packagedContent'
+            }, $true))
+            if ($packageAssignment.Count -ne 1) { throw 'Upstream package body discovery layout changed.' }
+            $text = $text.Replace($packageAssignment[0].Extent.Text, '$packagedContent = Get-ContentHubField (Get-ContentHubField $detailedSolution ''properties'') ''packagedContent''')
             $old = '$action = $SolutionStatus.Action'
             if (-not $text.Contains($old)) { throw 'Upstream solution action layout changed.' }
             $text = $text.Replace($old, $old + @'
@@ -1798,19 +2102,58 @@ function Update-ContentHubSource([string]$Source) {
             $old = '    if (-not $packagedContent) {'
             if ([regex]::Matches($text, [regex]::Escape($old)).Count -ne 1) { throw 'Upstream packaged content layout changed.' }
             $text = $text.Replace($old, @'
-    if (-not $packagedContent -or -not $packagedContent.PSObject.Properties['resources']) {
-        throw 'The catalog returned no deployable package manifest. Registration alone would not install its content; no write submitted.'
-    }
     if ($SolutionStatus.Status -in @('RepairRequired', 'RegistrationMissing')) {
         $packagedContent = $SolutionStatus.Presence.RepairTemplate
         if (-not $packagedContent) { throw 'No verified repair template is available.' }
     }
-    if ($packagedContent -and $packagedContent.PSObject.Properties['resources'] -and $packagedContent.resources.Count -eq 0) {
+    $packagedContent = Initialize-ContentHubPackageTemplate $packagedContent
+    $packageResources = Get-ContentHubField $packagedContent 'resources' -NoEnumerate
+    $resourceCount = if ($packageResources -is [array] -or $packageResources -is [Collections.IDictionary]) { $packageResources.Count }
+        else { @($packageResources.PSObject.Properties).Count }
+    if ($resourceCount -eq 0) {
         # An explicit empty manifest is a valid registration-only solution.
         $packagedContent = $null
     }
     if (-not $packagedContent) {
 '@)
+            $postDeploymentLoops = @($node.FindAll({
+                param($n)
+                $n -is [Management.Automation.Language.ForEachStatementAst] -and $n.Condition.Extent.Text -eq '$packagedContent.resources'
+            }, $true))
+            if ($postDeploymentLoops.Count -ne 1) { throw 'Upstream package metadata preparation changed.' }
+            $text = $text.Replace($postDeploymentLoops[0].Extent.Text, '# Package metadata was prepared on a schema-validated copy.')
+            $bodyAssignments = @($node.FindAll({
+                param($n)
+                $n -is [Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -eq '$deploymentBody'
+            }, $true))
+            if ($bodyAssignments.Count -ne 1) { throw 'Upstream ARM package deployment body changed.' }
+            $text = $text.Replace($bodyAssignments[0].Extent.Text, $bodyAssignments[0].Extent.Text +
+                "`n    `$deploymentBody.properties.parameters = Get-ContentHubPackageParameters `$packagedContent -Workspace `$Workspace -Region `$Region")
+            $serialization = '$jsonBody = $deploymentBody | ConvertTo-Json -EnumsAsStrings -Depth 50 -EscapeHandling EscapeNonAscii'
+            if (-not $text.Contains($serialization)) { throw 'Upstream ARM package serialization changed.' }
+            $text = $text.Replace($serialization, '$jsonBody = $deploymentBody | ConvertTo-Json -EnumsAsStrings -Depth 100 -EscapeHandling EscapeNonAscii -WarningAction Stop')
+            # Keep preparation failures as per-package failures even when they occur
+            # before the upstream request/serialization try blocks.
+            $parameterEnd = $node.Body.ParamBlock.Extent.EndOffset - $node.Extent.StartOffset
+            $text = $text.Insert($parameterEnd, "`n    try {")
+            $preparationCatch = @'
+    } catch {
+        $reason = if ($_.Exception.Data['ContentHubPreflightReason']) {
+            [string]$_.Exception.Data['ContentHubPreflightReason']
+        } elseif ($_.Exception.Message -match '^(Package |The catalog |No verified repair |Workspace package )') {
+            $_.Exception.Message
+        } else { 'Local package preparation failed; inspect the run log. Parameter values and provider bodies suppressed.' }
+        $resourceId = ([uri]"$script:BaseUri/providers/Microsoft.SecurityInsights/contentProductPackages/$($catalogEntry.name)").AbsolutePath
+        if (-not (Get-Variable ContentHubRequestDetails -Scope Script -ErrorAction SilentlyContinue)) { $script:ContentHubRequestDetails = @{} }
+        $script:ContentHubRequestDetails["PREPARE $resourceId"] = [pscustomobject]@{
+            Method = 'PREPARE'; ResourceId = $resourceId; HttpStatus = $null
+            AzureErrorCode = ''; RuleName = ''; Reason = $reason; RequestId = ''; WriteAttempted = $false
+        }
+        Write-PipelineMessage "  Package preparation failed for $solutionName : $reason" -Level Error
+        return $false
+    }
+'@
+            $text = $text.Insert($text.LastIndexOf('}'), "$preparationCatch`n")
         } elseif ($name -eq 'Invoke-Main') {
             $old = '$script:AuthHeader          = $azCtx.AuthHeader'
             if (-not $text.Contains($old)) { throw 'Upstream target initialization layout changed.' }
@@ -1962,13 +2305,7 @@ function Update-ContentHubSource([string]$Source) {
             $initialization = @'
     # Inert template versions coexist in Content Hub. Reconcile the newest first
     # so the same-run identity guard cannot select an older version by list order.
-    $targetTemplates = @($targetTemplates | Sort-Object -Property @{ Expression = {
-        $version = [string](Get-ContentHubField $_.properties 'version')
-        if ($version -match '^\d+(\.\d+)?$') { while (($version -split '\.').Count -lt 3) { $version += '.0' } }
-        $parsed = $null
-        if ([Management.Automation.SemanticVersion]::TryParse($version, [ref]$parsed)) { $parsed }
-        else { [Management.Automation.SemanticVersion]'0.0.0' }
-    }; Descending = $true }, @{ Expression = { $_.name } })
+    $targetTemplates = @(Sort-ContentHubTemplates $targetTemplates)
     $seenContent = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
 '@
             if ($name -eq 'Deploy-Workbooks') { $initialization += "`n    `$savedWorkbooks = @(Get-ContentHubSavedWorkbooks)`n    `$workbookReads = @{}" }
@@ -2011,8 +2348,8 @@ function New-ContentHubDeploymentCopy([string]$Path) {
         throw 'Upstream authentication layout changed. Refusing to run without the token-refresh adapter; review the updated deployer.'
     }
     $adapter = (Get-Command Invoke-ContentHubArmApi -CommandType Function).Definition
-    $insert = "`n`$script:ContentHubApiFailures = 0`n`$script:ContentHubUnresolvedFailures = @{} `n`$script:ContentHubRequestDetails = @{} `nfunction Invoke-SentinelApi {`n$adapter`n}`n"
-    foreach ($helper in @('Get-ContentHubStableId', 'Get-ContentHubField', 'Get-ContentHubSavedWorkbooks', 'Test-ContentHubRuleCollision', 'Resolve-ContentHubWorkbookIdentity', 'Compare-ContentHubArtifactVersion', 'Resolve-ContentHubManifestValue', 'Get-ContentHubPresenceInventory', 'Get-ContentHubArtifactIdentity', 'Save-ContentHubPackageDiagnostic', 'Read-ContentHubArtifact', 'ConvertTo-ContentHubSharedValue', 'Test-ContentHubSharedTemplate', 'Test-ContentHubPackagePresence', 'Confirm-ContentHubSelectedTarget', 'Write-ContentHubPackagePresenceReport', 'Confirm-ContentHubPackageArtifacts')) {
+    $insert = "`n`$script:ContentHubApiFailures = 0`n`$script:ContentHubUnresolvedFailures = @{} `n`$script:ContentHubRequestDetails = if (`$null -ne `$ContentHubFailureSink) { `$ContentHubFailureSink } else { @{} }`nfunction Invoke-SentinelApi {`n$adapter`n}`n"
+    foreach ($helper in @('Get-ContentHubStableId', 'Get-ContentHubField', 'Get-ContentHubResourceCondition', 'Assert-ContentHubPackageResources', 'Initialize-ContentHubPackageTemplate', 'Get-ContentHubPackageParameters', 'Get-ContentHubSavedWorkbooks', 'Test-ContentHubRuleCollision', 'Resolve-ContentHubWorkbookIdentity', 'Compare-ContentHubArtifactVersion', 'Sort-ContentHubTemplates', 'Resolve-ContentHubManifestValue', 'Get-ContentHubPresenceInventory', 'Get-ContentHubArtifactIdentity', 'Save-ContentHubPackageDiagnostic', 'Read-ContentHubArtifact', 'ConvertTo-ContentHubSharedValue', 'Test-ContentHubSharedTemplate', 'Test-ContentHubPackagePresence', 'Confirm-ContentHubSelectedTarget', 'Write-ContentHubPackagePresenceReport', 'Confirm-ContentHubPackageArtifacts')) {
         $insert += "`nfunction $helper {`n$((Get-Command $helper -CommandType Function).Definition)`n}`n"
     }
     $expected = Get-Variable ContentHubExpectedTarget -Scope Script -ValueOnly -ErrorAction SilentlyContinue
@@ -2032,7 +2369,7 @@ function Invoke-ContentHubWorkbookWrite([string]$Path, [string]$Payload) {
     if (-not $ast.ParamBlock) { throw 'Upstream parameter block missing; cannot preserve package diagnostics.' }
     $source = $ast.Extent.Text.Insert($imports[0].Extent.EndOffset, $insert)
     $separator = if ($ast.ParamBlock.Parameters.Count) { ',' } else { '' }
-    $source = $source.Insert($ast.ParamBlock.Extent.EndOffset - 1, "$separator`n[hashtable]`$ContentHubDiagnosticsSink`n")
+    $source = $source.Insert($ast.ParamBlock.Extent.EndOffset - 1, "$separator`n[hashtable]`$ContentHubDiagnosticsSink,`n[hashtable]`$ContentHubFailureSink`n")
     $source = Update-ContentHubSource $source
     $source += @'
 
@@ -2073,11 +2410,14 @@ function Deploy-Solutions([string[]]$Solutions, [string]$Label) {
     try {
         $invocationState = @{ ErrorCount = 0 }
         $global:LASTEXITCODE = 0
-        & $temporaryScript -SubscriptionId $script:SubscriptionId -ResourceGroup $script:ResourceGroup -Workspace $script:Workspace -Region $script:Region -Solutions $Solutions -SeveritiesToInclude $Severities -ContentHubDiagnosticsSink $script:ContentHubPackageDiagnostics -WhatIf:$WhatIfPreference 2>&1 |
+        & $temporaryScript -SubscriptionId $script:SubscriptionId -ResourceGroup $script:ResourceGroup -Workspace $script:Workspace -Region $script:Region -Solutions $Solutions -SeveritiesToInclude $Severities -ContentHubDiagnosticsSink $script:ContentHubPackageDiagnostics -ContentHubFailureSink $script:ContentHubDeploymentFailures -WhatIf:$WhatIfPreference 2>&1 |
             ForEach-Object {
                 if ($_ -is [Management.Automation.ErrorRecord]) {
                     $invocationState.ErrorCount++
                     Write-Warning $_.ToString()
+                    Write-Host "Content Hub error ID: $($_.FullyQualifiedErrorId)"
+                    if ($_.ErrorDetails -and $_.ErrorDetails.Message) { Write-Host "Content Hub error details: $($_.ErrorDetails.Message)" }
+                    if ($_.ScriptStackTrace) { Write-Host "Content Hub error stack: $($_.ScriptStackTrace)" }
                 } else { $_ }
             }
         $invocationSucceeded = $?
@@ -2102,6 +2442,608 @@ function Invoke-ContentHubDeploymentPhase([string[]]$Solutions, [string]$Label) 
     }
 }
 
+function Stop-PreviewDetection([string]$Reason) {
+    $exception = [InvalidOperationException]::new($Reason)
+    $exception.Data['PreviewDetectionSafeReason'] = $Reason
+    throw $exception
+}
+
+function ConvertTo-PreviewDetectionData($Value, [int]$Depth = 0, [object[]]$Ancestors = @()) {
+    if ($Depth -gt 64) { Stop-PreviewDetection 'Preview declaration exceeds the supported inspection depth.' }
+    if ($null -eq $Value -or $Value -is [string] -or $Value -is [ValueType]) { return $Value }
+    foreach ($ancestor in $Ancestors) {
+        if ([object]::ReferenceEquals($Value, $ancestor)) { Stop-PreviewDetection 'Circular preview declaration is not inspectable.' }
+    }
+    $parents = @($Ancestors) + ,$Value
+    if ($Value -is [Collections.IDictionary] -or $Value -is [pscustomobject]) {
+        $result = @{}
+        $keys = if ($Value -is [Collections.IDictionary]) { @($Value.Keys) } else { @($Value.PSObject.Properties.Name) }
+        foreach ($key in $keys) {
+            if ($result.ContainsKey([string]$key)) { Stop-PreviewDetection 'Ambiguous case-colliding preview JSON field names are unsupported.' }
+            if ($Value -is [Collections.IDictionary]) { $child = $Value[$key] }
+            else { $child = $Value.PSObject.Properties[$key].Value }
+            $result[[string]$key] = ConvertTo-PreviewDetectionData $child ($Depth + 1) $parents
+        }
+        return $result
+    }
+    if ($Value -is [array]) {
+        return ,@($Value | ForEach-Object { ConvertTo-PreviewDetectionData $_ ($Depth + 1) $parents })
+    }
+    Stop-PreviewDetection 'Preview declaration must contain JSON-compatible values.'
+}
+
+function Get-PreviewDetectionHash($Value) {
+    $canonical = ConvertTo-PolicyCanonical (ConvertTo-PreviewDetectionData $Value)
+    $json = ConvertTo-Json -InputObject $canonical -Depth 100 -Compress
+    return [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes($json)))
+}
+
+function Assert-PreviewDetectionFields($Object, [string[]]$Allowed, [string[]]$Required = @()) {
+    if ($Object -isnot [Collections.IDictionary]) { Stop-PreviewDetection 'Preview payload requires a literal JSON object.' }
+    foreach ($key in $Object.Keys) {
+        if ($key -cnotin $Allowed) { Stop-PreviewDetection 'Preview payload contains an unsupported field; review the current Graph beta schema manually.' }
+    }
+    foreach ($key in $Required) {
+        if (-not $Object.Contains($key) -or $null -eq $Object[$key]) { Stop-PreviewDetection 'Preview payload is missing a required literal field.' }
+    }
+}
+
+function Assert-PreviewDetectionLiteral($Value) {
+    if ($Value -is [string] -and $Value.TrimStart().StartsWith('[')) {
+        Stop-PreviewDetection 'ARM expressions in preview payloads are unsupported; no expressions are evaluated or sent to Graph.'
+    }
+    if ($Value -is [Collections.IDictionary]) {
+        foreach ($key in $Value.Keys) { Assert-PreviewDetectionLiteral $Value[$key] }
+    } elseif ($Value -is [array]) {
+        foreach ($child in $Value) { Assert-PreviewDetectionLiteral $child }
+    }
+}
+
+function Test-PreviewDetectionEmptyAction($Value) {
+    if ($null -eq $Value) { return $true }
+    if ($Value -is [Collections.IDictionary]) {
+        foreach ($key in $Value.Keys) {
+            if ($key -eq '@odata.type') { continue }
+            if (-not (Test-PreviewDetectionEmptyAction $Value[$key])) { return $false }
+        }
+        return $true
+    }
+    if ($Value -is [array]) { return $Value.Count -eq 0 }
+    return $false
+}
+
+function Assert-PreviewDetectionNoAutomation($Rule) {
+    $action = Get-Field $Rule 'detectionAction' @{}
+    Assert-PreviewDetectionFields $action @('alertTemplate', 'automatedActions', 'responseActions', 'incidentConfiguration', 'organizationalScope', '@odata.type')
+    foreach ($key in @('automatedActions', 'responseActions')) {
+        if (-not (Test-PreviewDetectionEmptyAction (Get-Field $action $key))) {
+            Stop-PreviewDetection 'Automated response actions are not supported by this disabled scheduled-preview adapter.'
+        }
+    }
+}
+
+function Assert-PreviewDetectionAlertSchema($Alert) {
+    if ([string]::IsNullOrWhiteSpace($Alert.title)) { Stop-PreviewDetection 'Preview alert title must be nonempty.' }
+    if ($Alert.Contains('tactics')) {
+        if ($Alert.tactics -isnot [array]) { Stop-PreviewDetection 'Preview tactics must be a literal array.' }
+        foreach ($tactic in $Alert.tactics) {
+            Assert-PreviewDetectionFields $tactic @('tactic', 'techniques') @('tactic')
+            if ($tactic.tactic -isnot [string] -or [string]::IsNullOrWhiteSpace($tactic.tactic)) { Stop-PreviewDetection 'Preview tactic identifier must be a literal string.' }
+            if ($tactic.Contains('techniques')) {
+                if ($tactic.techniques -isnot [array]) { Stop-PreviewDetection 'Preview techniques must be a literal array.' }
+                foreach ($technique in $tactic.techniques) {
+                    Assert-PreviewDetectionFields $technique @('technique', 'subTechniques') @('technique')
+                    if ($technique.technique -isnot [string] -or [string]::IsNullOrWhiteSpace($technique.technique)) { Stop-PreviewDetection 'Preview technique identifier must be a literal string.' }
+                    if ($technique.Contains('subTechniques')) {
+                        if ($technique.subTechniques -isnot [array]) { Stop-PreviewDetection 'Preview subTechniques must be a literal string array.' }
+                        foreach ($subTechnique in $technique.subTechniques) {
+                            if ($subTechnique -isnot [string]) { Stop-PreviewDetection 'Preview subTechniques must be literal strings.' }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    if ($Alert.Contains('entityMappings')) {
+        $reviewed = @{
+            accounts = @('id', 'aadUserIdColumn', 'dnsDomainColumn', 'nameColumn', 'ntDomainColumn', 'sidColumn', 'upnColumn', 'upnSuffixColumn')
+            hosts = @('id', 'deviceIdColumn', 'dnsDomainColumn', 'nameColumn', 'netBiosNameColumn', 'ntDomainColumn')
+            ips = @('id', 'addressColumn')
+            azureResources = @('id', 'resourceIdColumn')
+            files = @('id', 'nameColumn', 'directoryColumn', 'sha1Column', 'sha256Column')
+        }
+        Assert-PreviewDetectionFields $Alert.entityMappings @($reviewed.Keys)
+        foreach ($kind in $Alert.entityMappings.Keys) {
+            $mappings = $Alert.entityMappings[$kind]
+            if ($mappings -isnot [array]) { Stop-PreviewDetection 'Preview entity mappings must be literal arrays of mapping objects.' }
+            foreach ($mapping in $mappings) {
+                Assert-PreviewDetectionFields $mapping $reviewed[$kind]
+                foreach ($value in $mapping.Values) {
+                    if ($value -isnot [string] -or [string]::IsNullOrWhiteSpace($value)) { Stop-PreviewDetection 'Preview entity mapping identifiers and columns must be nonempty literal strings.' }
+                }
+            }
+        }
+    }
+    if ($Alert.Contains('customDetails')) {
+        if ($Alert.customDetails -isnot [Collections.IDictionary]) { Stop-PreviewDetection 'Preview customDetails must be a literal column-name map.' }
+        foreach ($value in $Alert.customDetails.Values) {
+            if ($value -isnot [string]) { Stop-PreviewDetection 'Preview customDetails column names must be literal strings.' }
+        }
+    }
+}
+
+function ConvertTo-PreviewDetectionPayload($Properties) {
+    $payload = ConvertTo-PreviewDetectionData $Properties
+    Assert-PreviewDetectionFields $payload @('id', 'displayName', 'description', 'status', 'queryCondition', 'schedule', 'detectionAction') @('id', 'displayName', 'status', 'queryCondition', 'schedule', 'detectionAction')
+    Assert-PreviewDetectionLiteral $payload
+    if ($payload.id -isnot [string] -or $payload.id -cnotmatch '^[a-z0-9][a-z0-9_-]{0,127}$') {
+        Stop-PreviewDetection 'Preview rule ID must be a literal stable safe slug (1-128 lowercase letters, digits, underscores or hyphens).'
+    }
+    if ($payload.displayName -isnot [string] -or [string]::IsNullOrWhiteSpace($payload.displayName) -or $payload.status -cne 'disabled') {
+        Stop-PreviewDetection 'Preview source must declare a nonempty literal displayName and disabled status; source statuses are not rewritten.'
+    }
+    if ($payload.Contains('description') -and $payload.description -isnot [string]) { Stop-PreviewDetection 'Preview description must be a literal string.' }
+    Assert-PreviewDetectionFields $payload.queryCondition @('queryText') @('queryText')
+    if ($payload.queryCondition.queryText -isnot [string] -or [string]::IsNullOrWhiteSpace($payload.queryCondition.queryText)) { Stop-PreviewDetection 'Preview queryText must be a nonempty literal string.' }
+    Assert-PreviewDetectionFields $payload.schedule @('frequency') @('frequency')
+    if ($payload.schedule.frequency -cnotin @('PT5M', 'PT1H', 'PT3H', 'PT12H', 'PT24H', 'P1D')) {
+        Stop-PreviewDetection 'Only reviewed positive scheduled frequencies are supported; continuous/zero or unknown frequencies require manual review.'
+    }
+    Assert-PreviewDetectionFields $payload.detectionAction @('alertTemplate', 'automatedActions', 'responseActions', 'incidentConfiguration') @('alertTemplate')
+    Assert-PreviewDetectionNoAutomation $payload
+    if ($payload.detectionAction.Contains('incidentConfiguration')) {
+        Assert-PreviewDetectionFields $payload.detectionAction.incidentConfiguration @('isExcludedFromIncidentCorrelation')
+        foreach ($value in $payload.detectionAction.incidentConfiguration.Values) {
+            if ($value -isnot [bool]) { Stop-PreviewDetection 'Preview incident configuration must be a literal boolean.' }
+        }
+    }
+    $alert = $payload.detectionAction.alertTemplate
+    Assert-PreviewDetectionFields $alert @('title', 'description', 'severity', 'recommendedActions', 'tactics', 'entityMappings', 'customDetails') @('title', 'description', 'severity')
+    foreach ($field in @('title', 'description', 'recommendedActions')) {
+        if ($alert.Contains($field) -and $alert[$field] -isnot [string]) { Stop-PreviewDetection 'Preview alert text must be literal strings.' }
+    }
+    if ($alert.severity -cnotin @('informational', 'low', 'medium', 'high')) { Stop-PreviewDetection 'Preview alert severity is unsupported.' }
+    Assert-PreviewDetectionAlertSchema $alert
+    return $payload
+}
+
+function Get-PreviewDetectionPlans($Template, [string]$Package, [string]$Version, [int]$Depth = 0) {
+    if ($Depth -gt 32) { Stop-PreviewDetection 'Nested preview template inspection depth exceeded.' }
+    if ($Template -is [string]) {
+        try { $Template = ConvertFrom-Json -InputObject $Template -AsHashtable -Depth 100 -ErrorAction Stop }
+        catch { Stop-PreviewDetection 'Preview package template is not valid inspectable JSON.' }
+    }
+    $Template = ConvertTo-PreviewDetectionData $Template
+    if ($Template -isnot [Collections.IDictionary] -or -not $Template.Contains('resources')) { Stop-PreviewDetection 'Preview package has no inspectable inline resources.' }
+    $resources = $Template.resources
+    $children = if ($resources -is [Collections.IDictionary]) { @($resources.Values) } elseif ($resources -is [array]) { @($resources) } else { Stop-PreviewDetection 'Preview resources must be an array or symbolic resource map.' }
+    foreach ($resource in $children) {
+        if ($resource -isnot [Collections.IDictionary]) { Stop-PreviewDetection 'Preview resource declaration must be an object.' }
+        $type = [string](Get-Field $resource 'type' '')
+        $importName = [string](Get-Field $resource 'import' '')
+        if ($importName -or $type -match '^Microsoft\.Security/detectionRules(?:@|$)') {
+            $import = Get-Field (Get-Field $Template 'imports' @{}) $importName @{}
+            if ($type -cne 'Microsoft.Security/detectionRules@2026-06-01-preview' -or $importName -cne 'MicrosoftSecurity' -or
+                (Get-Field $import 'provider') -cne 'MicrosoftSecurity' -or (Get-Field $import 'version') -cne '1.0.0') {
+                Stop-PreviewDetection 'Unreviewed preview extension type, provider or version; no MicrosoftSecurity ARM extension resource is submitted.'
+            }
+            $payload = ConvertTo-PreviewDetectionPayload (Get-Field $resource 'properties')
+            @{ Id = $payload.id; Payload = $payload; DesiredHash = Get-PreviewDetectionHash $payload; Sources = @(@{ Package = $Package; Version = $Version }) }
+        }
+        if ($type -eq 'Microsoft.Resources/deployments') {
+            $properties = Get-Field $resource 'properties' @{}
+            if ($properties.Contains('template')) {
+                Get-PreviewDetectionPlans $properties.template $Package $Version ($Depth + 1)
+            } elseif ($properties.Contains('templateLink')) {
+                Stop-PreviewDetection 'Linked deployment is not inspectable offline; resolve preview declarations manually.'
+            }
+        }
+        # Only executable resource children are walked, never stored properties.mainTemplate.
+        if ($resource.Contains('resources')) {
+            Get-PreviewDetectionPlans @{ resources = $resource.resources; imports = (Get-Field $Template 'imports' @{}) } $Package $Version ($Depth + 1)
+        }
+    }
+}
+
+function Test-PreviewDetectionPrerequisites {
+    Ensure-Module 'Microsoft.Graph.Authentication' -RequiredCommands @('Get-MgContext', 'Connect-MgGraph', 'Invoke-MgGraphRequest', 'Get-MgRequestContext', 'Set-MgRequestContext')
+    foreach ($name in @('Get-MgContext', 'Connect-MgGraph', 'Invoke-MgGraphRequest', 'Get-MgRequestContext', 'Set-MgRequestContext')) {
+        if (-not (Get-Command $name -ErrorAction SilentlyContinue)) {
+            Stop-PreviewDetection 'Graph authentication commands remain unavailable after automatic dependency setup. Restart PowerShell and rerun. No preview roles or consent are granted automatically.'
+        }
+    }
+}
+
+function Test-PreviewDetectionGraphContext($Context) {
+    return ($null -ne $Context -and (Get-PreviewDetectionContextField $Context 'TenantId') -eq $script:TenantId -and
+        (Get-PreviewDetectionContextField $Context 'Environment') -eq 'Global' -and (Get-PreviewDetectionContextField $Context 'AuthType') -eq 'Delegated' -and
+        'CustomDetection.ReadWrite.All' -cin @(Get-PreviewDetectionContextField $Context 'Scopes'))
+}
+
+function Get-PreviewDetectionContextField($Context, [string]$Name) {
+    if ($Context -is [Collections.IDictionary]) { return Get-Field $Context $Name }
+    if ($null -ne $Context) {
+        $property = $Context.PSObject.Properties[$Name]
+        if ($property) { return $property.Value }
+    }
+    return $null
+}
+
+function Save-PreviewDetectionJournal {
+    if ($WhatIfPreference) { Stop-PreviewDetection 'WhatIf cannot persist a preview journal.' }
+    if (-not (Get-Variable PreviewDetectionLock -Scope Script -ValueOnly -ErrorAction SilentlyContinue)) { Stop-PreviewDetection 'Preview journal lock is not held.' }
+    $temporary = "$script:PreviewDetectionJournalPath.$([guid]::NewGuid().ToString('N')).tmp"
+    try {
+        $json = ConvertTo-Json -InputObject $script:PreviewDetectionJournal -Depth 20 -Compress -ErrorAction Stop
+        $stream = [IO.File]::Open($temporary, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+        try {
+            $bytes = [Text.UTF8Encoding]::new($false).GetBytes($json)
+            $stream.Write($bytes, 0, $bytes.Length)
+            $stream.Flush($true)
+        } finally { $stream.Dispose() }
+        if ([IO.File]::Exists($script:PreviewDetectionJournalPath)) { [IO.File]::Replace($temporary, $script:PreviewDetectionJournalPath, [NullString]::Value) }
+        else { [IO.File]::Move($temporary, $script:PreviewDetectionJournalPath) }
+    } catch {
+        $script:PreviewDetectionPersistenceBlocked = $true
+        Stop-PreviewDetection 'Preview journal persistence failed; prior journal preserved. No further write is permitted; inspect the stable ID and reconcile manually.'
+    } finally {
+        if ([IO.File]::Exists($temporary)) {
+            try { [IO.File]::Delete($temporary) } catch { Write-Warning 'Could not remove this run''s preview journal staging file.' }
+        }
+    }
+}
+
+function Initialize-PreviewDetectionSupport {
+    $script:PreviewDetectionFailures = 0
+    $script:PreviewDetectionPersistenceBlocked = $false
+    if ($WhatIfPreference) { return }
+    Test-PreviewDetectionPrerequisites
+    if ($script:ArmEndpoint.Scheme -ne 'https' -or $script:ArmEndpoint.Authority -ne 'management.azure.com') {
+        Stop-PreviewDetection 'Defender detectionRules beta support is public-cloud only; no sovereign-cloud Graph fallback is allowed.'
+    }
+    if (Get-Variable PreviewDetectionLock -Scope Script -ValueOnly -ErrorAction SilentlyContinue) { Stop-PreviewDetection 'Preview support is already initialized.' }
+    $statePath = [string](Get-Variable PreviewDetectionStatePath -ValueOnly -ErrorAction SilentlyContinue)
+    if (-not $statePath) {
+        $directory = if (Test-Path -LiteralPath (Join-Path $HOME 'clouddrive') -PathType Container) { Join-Path $HOME 'clouddrive' } else { $HOME }
+        $statePath = Join-Path $directory "sentinel-preview-detections-$(Get-StableName $script:WorkspaceId).json"
+    }
+    $provider = $null
+    $drive = $null
+    $path = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($statePath, [ref]$provider, [ref]$drive)
+    if ($provider.Name -ne 'FileSystem' -or [IO.Path]::GetExtension($path) -ine '.json' -or -not [IO.Directory]::Exists([IO.Path]::GetDirectoryName($path))) {
+        Stop-PreviewDetection 'PreviewDetectionStatePath must be a .json filesystem file in an existing persistent directory.'
+    }
+    foreach ($variable in @('ConnectorReportPath', 'LogPath', 'PSCommandPath')) {
+        $reserved = [string](Get-Variable $variable -ValueOnly -ErrorAction SilentlyContinue)
+        if ($reserved -and $path -ieq $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($reserved)) {
+            Stop-PreviewDetection 'Preview journal cannot overwrite a report, log or script path.'
+        }
+    }
+    foreach ($candidate in @($path, "$path.lock")) {
+        if (Test-Path -LiteralPath $candidate) {
+            $item = Get-Item -LiteralPath $candidate -Force
+            if ($item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) { Stop-PreviewDetection 'Preview state and lock must be ordinary files, not directories or links.' }
+        }
+    }
+    $script:PreviewDetectionJournalPath = $path
+    try {
+        try { $script:PreviewDetectionLock = [IO.File]::Open("$path.lock", [IO.FileMode]::OpenOrCreate, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None) }
+        catch { Stop-PreviewDetection 'Preview journal is locked or inaccessible. Finish the other run or select the correct persistent state file; do not delete a live lock.' }
+        $scope = @{
+            schemaVersion = 1; adapter = 'SentinelScheduledDefenderPreview-v1'; tenantId = $script:TenantId
+            workspaceId = $script:WorkspaceId; subscriptionId = $script:SubscriptionId
+            rootIdentity = Get-StableName "$script:SubscriptionId|$script:WorkspaceId|https://graph.microsoft.com/beta/security/rules/detectionRules"
+            rules = @{}
+        }
+        if ([IO.File]::Exists($path)) {
+            try { $journal = ConvertFrom-Json -InputObject ([IO.File]::ReadAllText($path)) -AsHashtable -Depth 20 -ErrorAction Stop }
+            catch { Stop-PreviewDetection 'Preview journal is unreadable or invalid JSON; preserve it and reconcile manually.' }
+            Assert-PreviewDetectionFields $journal @($scope.Keys) @($scope.Keys)
+            foreach ($field in @('schemaVersion', 'adapter', 'tenantId', 'workspaceId', 'subscriptionId', 'rootIdentity')) {
+                if ($journal[$field] -ne $scope[$field]) { Stop-PreviewDetection 'Preview journal schema or tenant/workspace/root scope does not match this run; no adoption is allowed.' }
+            }
+            if ($journal.rules -isnot [Collections.IDictionary]) { Stop-PreviewDetection 'Preview journal rules must be an ownership map.' }
+            foreach ($id in $journal.rules.Keys) {
+                $entry = $journal.rules[$id]
+                Assert-PreviewDetectionFields $entry @('id', 'sources', 'desiredHash', 'observedHash', 'phase', 'status', 'operation') @('id', 'sources', 'desiredHash', 'observedHash', 'phase', 'status', 'operation')
+                if ($id -cnotmatch '^[a-z0-9][a-z0-9_-]{0,127}$' -or $entry.id -cne $id -or
+                    $entry.desiredHash -cnotmatch '^[A-F0-9]{64}$' -or $entry.phase -cnotin @('Pending', 'Accepted', 'Verified', 'Failed') -or
+                    $entry.status -cne 'disabled' -or $entry.operation -cnotin @('CREATE', 'UPDATE') -or
+                    ($entry.phase -eq 'Verified' -and $entry.observedHash -cnotmatch '^[A-F0-9]{64}$') -or
+                    ($entry.observedHash -ne '' -and $entry.observedHash -cnotmatch '^[A-F0-9]{64}$') -or $entry.sources -isnot [array]) {
+                    Stop-PreviewDetection 'Preview journal ownership record is invalid; preserve it and reconcile manually.'
+                }
+                foreach ($source in $entry.sources) {
+                    Assert-PreviewDetectionFields $source @('Package', 'Version') @('Package', 'Version')
+                    if ($source.Package -isnot [string] -or $source.Version -isnot [string]) { Stop-PreviewDetection 'Preview journal provenance record is invalid.' }
+                }
+            }
+            $script:PreviewDetectionJournal = $journal
+        } else { $script:PreviewDetectionJournal = $scope }
+        Write-Warning 'Preview Graph privileges are tenant-wide, not workspace-scoped. Azure Owner does not grant Graph consent. Active Defender/Sentinel roles, licensing and onboarding are required. Rules remain disabled; no ingestion or query validation is claimed.'
+        try { $context = Get-MgContext -ErrorAction Stop } catch { Stop-PreviewDetection 'Cannot inspect delegated Graph context; authenticate separately and rerun.' }
+        if (-not (Test-PreviewDetectionGraphContext $context)) {
+            if ((Read-Host 'Type AUTHENTICATE to request tenant-wide delegated CustomDetection.ReadWrite.All') -cne 'AUTHENTICATE') {
+                Stop-PreviewDetection 'Preview Graph authentication was not approved; no roles or consent were granted by this script.'
+            }
+            try {
+                Connect-MgGraph -TenantId $script:TenantId -Environment Global -Scopes 'CustomDetection.ReadWrite.All' -ContextScope Process -NoWelcome -ErrorAction Stop -Verbose:$false -Debug:$false | Out-Null
+                $context = Get-MgContext -ErrorAction Stop
+            } catch { Stop-PreviewDetection 'Delegated Graph authentication failed. Obtain CustomDetection.ReadWrite.All consent and active Defender/Sentinel roles separately; provider details suppressed.' }
+            if (-not (Test-PreviewDetectionGraphContext $context)) { Stop-PreviewDetection 'Graph context tenant, cloud, delegated authentication or required scope does not match; no Graph calls are allowed.' }
+        }
+        if (-not [IO.File]::Exists($path)) { Save-PreviewDetectionJournal }
+    } catch { Close-PreviewDetectionSupport; throw }
+}
+
+function Close-PreviewDetectionSupport {
+    $lock = Get-Variable PreviewDetectionLock -Scope Script -ValueOnly -ErrorAction SilentlyContinue
+    if ($null -ne $lock) {
+        try { $lock.Dispose() } catch { Write-Warning 'Could not close the preview journal lock; original run errors are preserved.' -WarningAction Continue }
+        $script:PreviewDetectionLock = $null
+    }
+}
+
+function Get-PreviewDetectionHttpStatus($Exception) {
+    foreach ($name in @('ResponseStatusCode', 'StatusCode')) {
+        $property = $Exception.PSObject.Properties[$name]
+        if ($property -and $null -ne $property.Value) {
+            try { return [int]$property.Value } catch { }
+        }
+    }
+    $response = $Exception.PSObject.Properties['Response']
+    if ($response -and $null -ne $response.Value) {
+        $status = $response.Value.PSObject.Properties['StatusCode']
+        if ($status -and $null -ne $status.Value) {
+            try { return [int]$status.Value } catch { }
+        }
+    }
+    return 0
+}
+
+function Invoke-PreviewDetectionGraph([string]$Method, [string]$Uri, $Body = $null, [switch]$Allow404) {
+    if ($WhatIfPreference) { Stop-PreviewDetection 'WhatIf cannot call Graph.' }
+    if ($Method -in @('POST', 'PATCH') -and (Get-Variable PreviewDetectionPersistenceBlocked -Scope Script -ValueOnly -ErrorAction SilentlyContinue)) {
+        Stop-PreviewDetection 'A journal persistence failure has blocked further preview writes in this run; reconcile the journal manually.'
+    }
+    $target = $null
+    if (-not [uri]::TryCreate($Uri, [UriKind]::Absolute, [ref]$target) -or $target.Scheme -ne 'https' -or
+        $target.Authority -cne 'graph.microsoft.com' -or $target.UserInfo -or $target.Fragment -or $target.Query -or
+        $target.AbsolutePath -cnotmatch '^/beta/security/rules/detectionRules(?:/[a-z0-9][a-z0-9_-]{0,127})?$') {
+        Stop-PreviewDetection 'Unexpected Graph beta endpoint or pagination link; no request was sent.'
+    }
+    $collection = $target.AbsolutePath -ceq '/beta/security/rules/detectionRules'
+    if (($collection -and $Method -cne 'POST') -or (-not $collection -and $Method -cnotin @('GET', 'PATCH'))) {
+        Stop-PreviewDetection 'Unsupported preview Graph operation; lists, deletes and arbitrary writes are not allowed.'
+    }
+    if (-not (Test-PreviewDetectionGraphContext (Get-MgContext -ErrorAction Stop))) { Stop-PreviewDetection 'Graph context changed; stop and reinitialize preview support.' }
+    $requestContext = Get-MgRequestContext -ErrorAction Stop
+    $retry = Get-PreviewDetectionContextField $requestContext 'MaxRetry'
+    if ($null -eq $retry) { Stop-PreviewDetection 'Graph SDK retry configuration is unavailable; cannot guarantee no write retries.' }
+    try {
+        Set-MgRequestContext -MaxRetry 0 -ErrorAction Stop | Out-Null
+        $arguments = @{
+            Method = $Method; Uri = $Uri; OutputType = 'Hashtable'; ErrorAction = 'Stop'
+            Verbose = $false; Debug = $false; InformationAction = 'SilentlyContinue'; WarningAction = 'SilentlyContinue'
+        }
+        if ($null -ne $Body) { $arguments.Body = ConvertTo-Json -InputObject $Body -Depth 100 -Compress; $arguments.ContentType = 'application/json' }
+        try { $response = Invoke-MgGraphRequest @arguments }
+        catch {
+            $status = Get-PreviewDetectionHttpStatus $_.Exception
+            if ($Method -eq 'GET' -and $Allow404 -and $status -eq 404) { return $null }
+            Stop-PreviewDetection "Graph $Method failed (HTTP $status; provider bodies suppressed). Check consent, active roles, licensing and onboarding. If a write was attempted its outcome is uncertain; reconcile the stable ID manually without retrying."
+        }
+        $data = ConvertTo-PreviewDetectionData $response
+        if ($data -isnot [Collections.IDictionary] -or $data.Contains('@odata.nextLink')) { Stop-PreviewDetection 'Graph did not return a single inspectable detection rule; no pagination or success inference is permitted.' }
+        return $data
+    } finally {
+        try { Set-MgRequestContext -MaxRetry $retry -ErrorAction Stop | Out-Null }
+        catch { Stop-PreviewDetection 'Graph SDK retry settings could not be restored; stop this run and reset the request context manually.' }
+    }
+}
+
+function Get-PreviewDetectionWritable($Rule) {
+    $data = ConvertTo-PreviewDetectionData $Rule
+    $writable = @{}
+    foreach ($key in @('id', 'displayName', 'description', 'status', 'isEnabled', 'queryCondition', 'schedule', 'detectionAction')) {
+        if ($data.Contains($key)) { $writable[$key] = $data[$key] }
+    }
+    # Only documented read-only/deprecated timestamps and OData annotations are excluded.
+    foreach ($pair in @(@('queryCondition', 'lastModifiedDateTime'), @('schedule', 'nextRunDateTime'))) {
+        if ($writable.Contains($pair[0]) -and $writable[$pair[0]] -is [Collections.IDictionary]) { $writable[$pair[0]].Remove($pair[1]) }
+    }
+    Remove-PreviewDetectionAnnotations $writable
+    return $writable
+}
+
+function Remove-PreviewDetectionAnnotations($Value) {
+    if ($Value -is [Collections.IDictionary]) {
+        foreach ($key in @($Value.Keys)) {
+            if ($key.StartsWith('@odata.')) { $Value.Remove($key) }
+            else { Remove-PreviewDetectionAnnotations $Value[$key] }
+        }
+    } elseif ($Value -is [array]) {
+        foreach ($child in $Value) { Remove-PreviewDetectionAnnotations $child }
+    }
+}
+
+function Test-PreviewDetectionSupplied($Expected, $Observed) {
+    if ($Expected -is [Collections.IDictionary]) {
+        if ($Observed -isnot [Collections.IDictionary]) { return $false }
+        foreach ($key in $Expected.Keys) {
+            if (-not $Observed.Contains($key) -or -not (Test-PreviewDetectionSupplied $Expected[$key] $Observed[$key])) { return $false }
+        }
+        return $true
+    }
+    if ($Expected -is [array]) {
+        if ($Observed -isnot [array] -or $Observed.Count -ne $Expected.Count) { return $false }
+        for ($i = 0; $i -lt $Expected.Count; $i++) {
+            if (-not (Test-PreviewDetectionSupplied $Expected[$i] $Observed[$i])) { return $false }
+        }
+        return $true
+    }
+    return (Get-PreviewDetectionHash $Expected) -ceq (Get-PreviewDetectionHash $Observed)
+}
+
+function Add-PreviewDetectionResult([string]$Id, [string]$Status, [string]$Reason, $Evidence = @{}) {
+    $Evidence.Stage = 'PreviewContent'
+    $Evidence.Requested = 'Scheduled Defender custom detection, disabled; manual enable and query review required.'
+    $Evidence.ConnectorStatus = if ($Status -in @('Configured', 'AlreadyConfigured')) { 'Disabled (preview review required)' } else { 'N/A' }
+    $previousRecord = Get-Variable CurrentRecord -Scope Script -ValueOnly -ErrorAction SilentlyContinue
+    $script:CurrentRecord = $null
+    try {
+        Add-ConnectorResult "Preview detection / $Id" $Status $Reason 'Inspect the stable Graph rule ID and ownership journal. Reconcile uncertain outcomes manually; do not delete or adopt rules. Review query, licensing and onboarding in Defender before any manual enable.' $Evidence
+    } finally { $script:CurrentRecord = $previousRecord }
+    $script:ConnectorReport[$script:ConnectorReport.Count - 1].RowType = 'Content'
+    if ($Status -in @('ActionRequired', 'Failed')) { $script:PreviewDetectionFailures++ }
+}
+
+function Invoke-PreviewDetectionPlan($Plan) {
+    $id = $Plan.Id
+    $uri = "https://graph.microsoft.com/beta/security/rules/detectionRules/$id"
+    $evidence = @{ Attempted = $false; Verified = $false; Change = ''; Existing = 'Not verified.'; PolicyOrDiagnosticSetting = $uri }
+    $intentSaved = $false
+    try {
+        if (Get-Variable PreviewDetectionPersistenceBlocked -Scope Script -ValueOnly -ErrorAction SilentlyContinue) {
+            Stop-PreviewDetection 'A journal persistence failure has blocked further preview writes in this run; reconcile the journal manually.'
+        }
+        $owned = Get-Field $script:PreviewDetectionJournal.rules $id
+        if ($null -ne $owned -and $owned.phase -cne 'Verified') {
+            Stop-PreviewDetection 'Journal contains a pending, accepted or failed write. Preserve the rule and reconcile this stable ID manually; matching content is not adoption evidence.'
+        }
+        $existing = Invoke-PreviewDetectionGraph GET $uri -Allow404
+        if ($null -ne $existing) {
+            $existingStatus = [string](Get-Field $existing 'status' 'unknown')
+            if ($existingStatus -cnotin @('enabled', 'disabled', 'autoDisabled', 'unknownFutureValue')) { $existingStatus = 'unknown' }
+            $evidence.Existing = "Graph ID $id exists; status $existingStatus."
+            if ((Get-Field $existing 'id') -cne $id) { Stop-PreviewDetection 'Graph response ID differs from the exact requested stable ID; no write is allowed.' }
+            if ($null -eq $owned) { Stop-PreviewDetection 'Existing rule is unowned. It is preserved even if its content appears equivalent; no adoption or overwrite is allowed.' }
+            $observed = Get-PreviewDetectionWritable $existing
+            if ((Get-Field $observed 'status') -cne 'disabled' -or (Get-PreviewDetectionHash $observed) -cne $owned.observedHash) {
+                Stop-PreviewDetection 'Owned rule was externally modified or is no longer disabled; preserve it and reconcile ownership manually.'
+            }
+            Assert-PreviewDetectionNoAutomation $observed
+            if ($owned.desiredHash -ceq $Plan.DesiredHash) {
+                $evidence.Verified = $true
+                $evidence.Verification = "Exact ID $id, disabled status and full writable ownership fingerprint unchanged."
+                Add-PreviewDetectionResult $id AlreadyConfigured 'Journal-owned disabled scheduled rule is unchanged; no query or ingestion validation is claimed.' $evidence
+                return
+            }
+            if (-not [bool](Get-Variable UpdateOwnedPreviewDetections -ValueOnly -ErrorAction SilentlyContinue)) {
+                Stop-PreviewDetection 'Catalog payload changed. Updating requires -UpdateOwnedPreviewDetections and exact per-rule UPDATE approval; existing rule preserved.'
+            }
+            $operation = 'UPDATE'
+            $method = 'PATCH'
+            $body = ConvertTo-PreviewDetectionData $Plan.Payload
+            $body.Remove('id')
+            Write-Warning "UPDATE $id replaces the reviewed writable declaration while keeping it disabled. Graph supplies no assumed atomic concurrency/ETag guarantee; keep other writers quiescent."
+        } else {
+            if ($null -ne $owned) { Stop-PreviewDetection 'Previously owned rule is missing; manual review is required, never automatic recreation.' }
+            $evidence.Existing = "Exact Graph ID $id returned HTTP 404."
+            $operation = 'CREATE'
+            $method = 'POST'
+            $body = $Plan.Payload
+        }
+        $evidence.Change = "$operation disabled scheduled detection $id"
+        if (-not (Invoke-ConnectorChange $uri $evidence.Change)) {
+            Add-PreviewDetectionResult $id Planned 'ShouldProcess prevented the write.' $evidence
+            return
+        }
+        $priorHash = if ($null -ne $owned) { $owned.desiredHash } else { 'new rule' }
+        Write-Host "Preview $operation ID $id; disabled; frequency $($Plan.Payload.schedule.frequency); sources: $((@($Plan.Sources | ForEach-Object { $_.Package + ' ' + $_.Version })) -join ', '); prior SHA256 $priorHash; desired SHA256 $($Plan.DesiredHash). Review the catalog declaration manually; query bodies are not logged."
+        if ((Read-Host "Type $operation $id to approve this exact disabled scheduled rule") -cne "$operation $id") {
+            Stop-PreviewDetection 'Exact per-rule write approval was not supplied; rule preserved.'
+        }
+        $latest = Invoke-PreviewDetectionGraph GET $uri -Allow404
+        if ($operation -eq 'CREATE') {
+            if ($null -ne $latest) { Stop-PreviewDetection 'Rule appeared before POST; it is unowned and must be preserved.' }
+        } elseif ($null -eq $latest -or (Get-Field $latest 'id') -cne $id -or (Get-Field $latest 'status') -cne 'disabled' -or
+            (Get-PreviewDetectionHash (Get-PreviewDetectionWritable $latest)) -cne $owned.observedHash) {
+            Stop-PreviewDetection 'Rule changed immediately before PATCH; preserve it. No atomic concurrency guarantee is assumed.'
+        }
+        $entry = @{
+            id = $id; sources = $Plan.Sources; desiredHash = $Plan.DesiredHash; observedHash = ''
+            phase = 'Pending'; status = 'disabled'; operation = $operation
+        }
+        $script:PreviewDetectionJournal.rules[$id] = $entry
+        Save-PreviewDetectionJournal
+        $intentSaved = $true
+        $evidence.Attempted = $true
+        $writeUri = if ($operation -eq 'CREATE') { 'https://graph.microsoft.com/beta/security/rules/detectionRules' } else { $uri }
+        $accepted = Invoke-PreviewDetectionGraph $method $writeUri $body
+        if ((Get-Field $accepted 'id') -cne $id) { Stop-PreviewDetection 'Write response did not confirm the exact stable ID; outcome uncertain, reconcile manually.' }
+        $entry.phase = 'Accepted'
+        Save-PreviewDetectionJournal
+        $verified = $false
+        for ($attempt = 0; $attempt -lt 3; $attempt++) {
+            if ($attempt -gt 0) { Start-Sleep -Seconds 1 }
+            $readback = Invoke-PreviewDetectionGraph GET $uri -Allow404
+            if ($null -eq $readback) { continue }
+            if ((Get-Field $readback 'id') -cne $id) { Stop-PreviewDetection 'Readback returned a different ID; reconcile manually.' }
+            $writable = Get-PreviewDetectionWritable $readback
+            Assert-PreviewDetectionNoAutomation $writable
+            if ((Get-Field $writable 'status') -cne 'disabled') { Stop-PreviewDetection 'Readback is not disabled; preserve it and reconcile manually.' }
+            if (Test-PreviewDetectionSupplied $Plan.Payload $writable) { $verified = $true; break }
+        }
+        if (-not $verified) { Stop-PreviewDetection 'Bounded readback could not verify all supplied fields; do not retry the write or adopt the rule.' }
+        $entry.observedHash = Get-PreviewDetectionHash $writable
+        $entry.phase = 'Verified'
+        Save-PreviewDetectionJournal
+        $evidence.Verified = $true
+        $evidence.Verification = "Exact ID $id, disabled status, supplied fields and observed writable fingerprint verified."
+        Add-PreviewDetectionResult $id Configured 'Disabled scheduled preview rule persisted and read back. Manual query and enable review remains required.' $evidence
+    } catch {
+        if ($intentSaved) {
+            $script:PreviewDetectionJournal.rules[$id].phase = 'Failed'
+            try { Save-PreviewDetectionJournal } catch { Write-Warning "Preview journal remains uncertain for ID $id; preserve its prior Pending/Accepted record and reconcile manually." }
+        }
+        $reason = if ($_.Exception.Data.Contains('PreviewDetectionSafeReason')) { [string]$_.Exception.Data['PreviewDetectionSafeReason'] } else { 'Preview operation failed; provider bodies suppressed. Preserve this stable ID and reconcile manually before rerunning.' }
+        Add-PreviewDetectionResult $id ActionRequired $reason $evidence
+    }
+}
+
+function Invoke-PreviewDetectionConfiguration([string[]]$Names) {
+    if (-not (Get-Variable PreviewDetectionFailures -Scope Script -ErrorAction SilentlyContinue)) { $script:PreviewDetectionFailures = 0 }
+    $plans = @{}
+    $blocked = $false
+    try { $catalog = @(Available-Solutions | ForEach-Object { ConvertTo-PreviewDetectionData $_ }) }
+    catch { Add-PreviewDetectionResult 'catalog' ActionRequired 'Official Content Hub catalog GET failed; no preview writes are allowed.'; return }
+    foreach ($name in @($Names | Select-Object -Unique)) {
+        try {
+            $matches = @($catalog | Where-Object { (Get-Field (Get-Field $_ 'properties' @{}) 'displayName') -ceq $name })
+            if ($matches.Count -eq 0) { Add-PreviewDetectionResult $name Skipped 'Exact display name is absent from the official catalog.'; continue }
+            if ($matches.Count -ne 1) { Stop-PreviewDetection 'Exact catalog display name is ambiguous; no preview writes are allowed.' }
+            $entry = $matches[0]
+            $catalogId = [string](Get-Field $entry 'name' '')
+            if ([string]::IsNullOrWhiteSpace($catalogId) -or $catalogId.StartsWith('[')) { Stop-PreviewDetection 'Catalog resource name is not a literal identity.' }
+            $detailPath = "$script:WorkspaceId/providers/Microsoft.SecurityInsights/contentProductPackages/$([uri]::EscapeDataString($catalogId))?api-version=$ApiVersion"
+            $detail = ConvertTo-PreviewDetectionData (Read-Arm $detailPath)
+            $properties = Get-Field $detail 'properties' @{}
+            $template = Get-Field $properties 'packagedContent'
+            $version = [string](Get-Field $properties 'version' (Get-Field (Get-Field $entry 'properties' @{}) 'version' ''))
+            if ($null -eq $template) { Stop-PreviewDetection 'Catalog detail has no inspectable packagedContent; no preview writes are allowed.' }
+            $packagePlans = @(Get-PreviewDetectionPlans $template $catalogId $version)
+            if ($packagePlans.Count -eq 0) { Add-PreviewDetectionResult $name Skipped 'No direct reviewed scheduled preview detection declarations; stored contentTemplates are inert.' }
+            foreach ($plan in $packagePlans) {
+                if ($plans.ContainsKey($plan.Id)) {
+                    if ($plans[$plan.Id].DesiredHash -cne $plan.DesiredHash) { Stop-PreviewDetection 'Conflicting stable preview rule IDs across selected packages; all preview writes are blocked.' }
+                    $plans[$plan.Id].Sources = @($plans[$plan.Id].Sources) + @($plan.Sources)
+                } else { $plans[$plan.Id] = $plan }
+            }
+        } catch {
+            $blocked = $true
+            $reason = if ($_.Exception.Data.Contains('PreviewDetectionSafeReason')) { [string]$_.Exception.Data['PreviewDetectionSafeReason'] } else { 'Preview catalog detail or declaration inspection failed; provider bodies suppressed. No preview writes are allowed.' }
+            Add-PreviewDetectionResult $name ActionRequired $reason
+        }
+    }
+    foreach ($id in @($plans.Keys | Sort-Object)) {
+        if ($blocked) { Add-PreviewDetectionResult $id ActionRequired 'A selected package failed preview preflight; all preview writes blocked before any Graph mutation.' }
+        elseif ($WhatIfPreference) {
+            Add-PreviewDetectionResult $id Planned 'Scheduled disabled declaration extracted; WhatIf performs no Graph authentication, requests, journal or lock writes.' @{ Change = "Review disabled scheduled detection $id"; PolicyOrDiagnosticSetting = "https://graph.microsoft.com/beta/security/rules/detectionRules/$id" }
+        } else { Invoke-PreviewDetectionPlan $plans[$id] }
+    }
+}
+
 function Get-StableName([string]$Text) {
     $bytes = [Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes($Text.ToLowerInvariant()))
     return ([guid]::new([byte[]]$bytes[0..15])).ToString()
@@ -2113,6 +3055,7 @@ function Invoke-ConnectorChange([string]$Target, [string]$Action) {
 
 $script:ConnectorReport = [Collections.Generic.List[object]]::new()
 $script:ContentHubRuleFailures = @{}
+$script:ContentHubDeploymentFailures = @{}
 $script:ContentHubPackageDiagnostics = @{}
 $script:Operation = @{}
 $script:CurrentRecord = $null
@@ -3458,16 +4401,64 @@ function Get-EntraLogSelection {
     return $selection
 }
 
-function Get-UncoveredCategories($Settings, [string[]]$Categories) {
-    $sameDestination = @($Settings | Where-Object { (Get-Field $_.properties 'workspaceId' '') -eq $script:WorkspaceId })
-    foreach ($category in $Categories) {
-        $covered = @($sameDestination | Where-Object {
-            @((Get-Field $_.properties 'logs' @()) | Where-Object {
-                (Get-Field $_ 'enabled' $false) -and ((Get-Field $_ 'category' '') -eq $category -or (Get-Field $_ 'categoryGroup' '') -eq 'allLogs')
-            }).Count -gt 0
-        }).Count -gt 0
-        if (-not $covered) { $category }
+function Get-DiagnosticCoverage($Settings, [string[]]$Categories) {
+    if (-not $Categories.Count -or @($Categories | Where-Object { [string]::IsNullOrWhiteSpace($_) }).Count) {
+        throw 'Diagnostic coverage requires explicit nonempty category names.'
     }
+    $requested = @($Categories | Select-Object -Unique)
+    $covering = [Collections.Generic.List[object]]::new()
+    $seen = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+    foreach ($setting in $Settings) {
+        $name = [string](Get-Field $setting 'name' '')
+        $properties = Get-Field $setting 'properties'
+        if (-not $name -or -not $seen.Add($name) -or $properties -isnot [Collections.IDictionary]) {
+            throw 'Diagnostic inventory has missing/duplicate names or invalid properties; no coverage or free slot can be inferred.'
+        }
+        $workspace = [string](Get-Field $properties 'workspaceId' '')
+        if (-not [string]::Equals($workspace.TrimEnd('/'), $script:WorkspaceId.TrimEnd('/'), [StringComparison]::OrdinalIgnoreCase)) { continue }
+        $logs = Get-ContentHubField $properties 'logs' -NoEnumerate
+        if ($null -ne $logs -and $logs -isnot [array]) { throw "Diagnostic setting $name has an invalid logs collection; no coverage can be inferred." }
+        $enabled = @()
+        foreach ($log in $logs) {
+            if ($log -isnot [Collections.IDictionary]) { throw "Diagnostic setting $name has an invalid log entry." }
+            if ((Get-Field $log 'enabled' $false) -isnot [bool]) { throw "Diagnostic setting $name has an invalid enabled flag." }
+            if ((Get-Field $log 'enabled' $false) -ne $true) { continue }
+            if ((Get-Field $log 'categoryGroup' '') -eq 'allLogs') { $enabled += $requested }
+            elseif ((Get-Field $log 'category' '') -in $requested) { $enabled += [string]$log.category }
+        }
+        $enabled = @($enabled | Select-Object -Unique)
+        if ($enabled.Count) { $covering.Add(@{ Name = $name; Categories = $enabled }) }
+    }
+    $full = @($covering | Where-Object { $_.Categories.Count -eq $requested.Count } | Sort-Object Name | Select-Object -First 1)
+    $selected = if ($full.Count) { $full } else { @($covering | Sort-Object Name) }
+    $covered = @($selected | ForEach-Object { $_.Categories } | Select-Object -Unique)
+    return @{
+        Missing = @($requested | Where-Object { $_ -notin $covered })
+        Covered = $covered
+        Names = @($selected | ForEach-Object { $_.Name })
+        Settings = $selected
+        Count = @($Settings).Count
+    }
+}
+
+function Get-UncoveredCategories($Settings, [string[]]$Categories) {
+    (Get-DiagnosticCoverage $Settings $Categories).Missing
+}
+
+function Set-DiagnosticCoverageEvidence($Coverage, [string]$Destination, [string[]]$Categories) {
+    $observed = @($Coverage.Settings | ForEach-Object { "$($_.Name): $($_.Categories -join ', ')" })
+    $script:Operation.Existing = "ARM GET; $Destination; enabled categories: $($Coverage.Covered -join ', '); missing/disabled: $($Coverage.Missing -join ', '); settings: $($observed -join '; '); setting count=$($Coverage.Count)/5."
+    $script:Operation.Requested = "$Destination; enabled categories: $($Categories -join ', ')"
+    $script:Operation.PolicyOrDiagnosticSetting = if ($Coverage.Names.Count) { $Coverage.Names -join '; ' } else { 'None (no covering setting)' }
+    $script:Operation.ConnectorStatus = if (-not $Coverage.Missing.Count) { 'Configured (ingestion unverified)' }
+        elseif ($Coverage.Covered.Count) { 'Partially configured' } else { 'Not configured' }
+}
+
+function Complete-ExistingDiagnosticCoverage([string]$Label, $Coverage) {
+    $script:Operation.Verified = $true
+    $script:Operation.Verification = "ARM GET confirmed all requested categories to the Sentinel workspace in existing setting(s): $($Coverage.Names -join '; ')."
+    Write-Host "$Label | Already configured by existing diagnostic setting(s): $($Coverage.Names -join '; '). No changes required." -ForegroundColor Green
+    Add-ConnectorResult $Label 'AlreadyConfigured' "Required logs already target this Sentinel workspace. Existing setting(s): $($Coverage.Names -join '; '). Ingestion not verified."
 }
 
 function Get-DiagnosticRouting($Properties, [string]$ResourceId = '') {
@@ -3481,36 +4472,27 @@ function Enable-DiagnosticConnector([string]$Label, [string]$Scope, [string[]]$C
     $api = if ($Entra) { '2017-04-01' } else { $MonitorApiVersion }
     $root = if ($Entra) { '/providers/Microsoft.AADIAM' } else { "$Scope/providers/Microsoft.Insights" }
     $settings = @(Read-ArmList "$root/diagnosticSettings?api-version=$api")
-    $sameDestination = @($settings | Where-Object { (Get-Field $_.properties 'workspaceId' '') -eq $script:WorkspaceId })
-    $uncovered = @(Get-UncoveredCategories $settings $Categories)
+    $Categories = @($Categories | Select-Object -Unique)
+    $coverage = Get-DiagnosticCoverage $settings $Categories
+    $uncovered = $coverage.Missing
     $sourceScope = if ($Entra) { "/providers/microsoft.aadiam (tenant $script:TenantId)" } else { $Scope }
     $destination = "source=$sourceScope; workspace=$script:WorkspaceId"
-    $observed = @(
-        foreach ($setting in $sameDestination) {
-            $logs = @(foreach ($log in (Get-Field $setting.properties 'logs' @())) {
-                if (-not (Get-Field $log 'enabled' $false)) { continue }
-                if ((Get-Field $log 'categoryGroup' '') -eq 'allLogs') { 'allLogs' }
-                elseif ((Get-Field $log 'category' '') -in $Categories) { [string]$log.category }
-            })
-            if ($logs.Count) { "$($setting.name): $($logs -join ', ')" }
-        }
-    )
-    $script:Operation.Existing = "ARM GET; $destination; requested categories already enabled: $(($Categories | Where-Object { $_ -notin $uncovered }) -join ', '); missing/disabled: $($uncovered -join ', '); settings: $($observed -join '; ')."
-    $script:Operation.Requested = "$destination; enabled categories: $($Categories -join ', ')"
-    $script:Operation.PolicyOrDiagnosticSetting = if ($observed.Count) { ($observed -join '; ') } else { 'None (no covering setting)' }
-    $script:Operation.ConnectorStatus = if ($uncovered.Count -eq 0) { 'Configured (ingestion unverified)' } elseif ($uncovered.Count -lt $Categories.Count) { 'Partially configured' } else { 'Not configured' }
+    Set-DiagnosticCoverageEvidence $coverage $destination $Categories
     if ($uncovered.Count -eq 0) {
-        $script:Operation.Verified = $true
-        $script:Operation.Verification = "ARM GET confirmed all requested categories: $($script:Operation.Requested)"
-        Add-ConnectorResult $Label 'AlreadyConfigured' 'Requested diagnostic categories already target this workspace; ingestion not verified.'
+        Complete-ExistingDiagnosticCoverage $Label $coverage
         return
     }
-    if ($settings.Count -ge 5) { throw 'Five diagnostic settings already exist. Consolidate manually, then rerun.' }
+    if ($settings.Count -ge 5) {
+        Add-ConnectorResult $Label 'ActionRequired' "Diagnostic setting limit reached ($($settings.Count)/5). Missing categories: $($uncovered -join ', '). Existing settings: $($settings.name -join '; '). No settings changed." 'Review/consolidate existing settings manually while preserving required destinations. All five slots are occupied; a sixth setting cannot be created.'
+        return
+    }
     $name = 'sentinel-' + (Get-StableName "$script:WorkspaceId|$sourceScope|$($Categories -join ',')").Substring(0, 24)
     if ($Entra -and -not @($settings | Where-Object name -eq 'Microsoft-Entra-ID-Sentinel').Count) {
         $name = 'Microsoft-Entra-ID-Sentinel'
     }
-    if (@($settings | Where-Object name -eq $name).Count -gt 0) { throw "Diagnostic setting name collision: $name. No existing setting will be overwritten." }
+    if (@($settings | Where-Object name -eq $name).Count -gt 0) {
+        $name = "sentinel-$([guid]::NewGuid().ToString('N'))"
+    }
     $properties = @{ workspaceId = $script:WorkspaceId; logs = @() }
     if ($Dedicated -and -not (Test-StorageQueueScope $Scope)) { $properties.logAnalyticsDestinationType = 'Dedicated' }
     foreach ($category in $uncovered) {
@@ -3525,24 +4507,56 @@ function Enable-DiagnosticConnector([string]$Label, [string]$Scope, [string[]]$C
         Add-ConnectorResult $Label 'Planned' "Would enable diagnostic categories: $($uncovered -join ', ')."
         return
     }
+    # Approval may take time: recheck both coverage and capacity before submitting a create.
+    $settings = @(Read-ArmList "$root/diagnosticSettings?api-version=$api")
+    $coverage = Get-DiagnosticCoverage $settings $Categories
+    Set-DiagnosticCoverageEvidence $coverage $destination $Categories
+    if (-not $coverage.Missing.Count) {
+        Complete-ExistingDiagnosticCoverage $Label $coverage
+        return
+    }
+    if ($settings.Count -ge 5) {
+        Add-ConnectorResult $Label 'ActionRequired' "Diagnostic setting limit reached during approval ($($settings.Count)/5). Missing categories: $($coverage.Missing -join ', '). Existing settings: $($settings.name -join '; '). No write submitted." 'Another writer may have consumed the last slot. Review existing destinations; no settings were overwritten or deleted.'
+        return
+    }
+    if (@($settings | Where-Object name -eq $name).Count) {
+        Add-ConnectorResult $Label 'ActionRequired' "Diagnostic setting $name appeared during approval. No existing setting will be overwritten." 'Rerun to reassess coverage and select a collision-free new setting name.'
+        return
+    }
+    if (@($coverage.Missing | Where-Object { $_ -notin $uncovered }).Count) {
+        Add-ConnectorResult $Label 'ActionRequired' 'Existing coverage decreased during approval. No write submitted because the approved categories no longer cover the requirement.' 'Rerun after other diagnostic-setting writers have finished.'
+        return
+    }
+    $uncovered = $coverage.Missing
+    $properties.logs = @($properties.logs | Where-Object { $_.category -in $uncovered })
+    $script:Operation.Change = "Create separate diagnostic setting: $destination; setting=$name; newly enabled categories: $($uncovered -join ', '); table routing=$routing"
+    $script:Operation.PolicyOrDiagnosticSetting = (@($coverage.Names) + @($name) | Select-Object -Unique) -join '; '
     $path = "$root/diagnosticSettings/${name}?api-version=$api"
     $script:Operation.Attempted = $true
     $null = Read-Arm $path 'PUT' @{ properties = $properties }
     $script:Operation.Accepted = $true
-    $actual = Read-Arm $path
-    if ($actual.properties.workspaceId -ne $script:WorkspaceId) { throw 'Diagnostic destination read-back mismatch.' }
-    foreach ($category in $uncovered) {
-        if (@($actual.properties.logs | Where-Object { $_.enabled -and (Get-Field $_ 'category' '') -eq $category }).Count -eq 0) {
-            throw "Diagnostic category $category not enabled in read-back."
+    $verified = $false
+    for ($poll = 0; $poll -lt 6; $poll++) {
+        # Entra named GET can briefly return 404 after PUT; verify through the source collection.
+        $settings = @(Read-ArmList "$root/diagnosticSettings?api-version=$api")
+        $actual = @($settings | Where-Object name -eq $name)
+        if ($actual.Count -gt 1) { throw 'Diagnostic read-back returned duplicate names; verification refused.' }
+        if ($actual.Count -eq 1) {
+            $createdCoverage = Get-DiagnosticCoverage $actual $uncovered
+            $coverage = Get-DiagnosticCoverage $settings $Categories
+            if (-not $createdCoverage.Missing.Count -and -not $coverage.Missing.Count) {
+                $verified = $true
+                break
+            }
         }
+        if ($poll -lt 5) { Start-Sleep -Seconds 5 }
     }
-    $remaining = @(Get-UncoveredCategories @(Read-ArmList "$root/diagnosticSettings?api-version=$api") $Categories)
-    if ($remaining.Count -gt 0) { throw "Requested destination coverage is incomplete after read-back: $($remaining -join ', ')." }
+    if (-not $verified) { throw "Diagnostic PUT was accepted but setting $name and all required workspace/category coverage could not be verified within six collection reads. Do not assume success; inspect the setting before rerunning." }
     $script:Operation.Verified = $true
     $script:Operation.Verification = "ARM GET confirmed requested diagnostic setting and all categories: $($script:Operation.Requested)"
     $script:Operation.ConnectorStatus = 'Configured (ingestion unverified)'
-    $script:Operation.PolicyOrDiagnosticSetting = $name
-    Add-ConnectorResult $Label 'Configured' "Enabled $($uncovered -join ', '); ingestion not verified."
+    $script:Operation.PolicyOrDiagnosticSetting = (@($coverage.Names) + @($name) | Select-Object -Unique) -join '; '
+    Add-ConnectorResult $Label 'Configured' "Created $name for missing categories: $($uncovered -join ', '). Required coverage verified using setting(s): $($coverage.Names -join '; '). Existing settings preserved; ingestion not verified."
 }
 
 function Get-ResourceAdapter([string]$ResourceId) {
@@ -3782,15 +4796,12 @@ function Get-DiagnosticRecordEvidence($Record) {
         })
         if (-not $categories.Count) { throw "No diagnostic categories could be assessed for $scope." }
         $settings = @(Read-ArmList "$root/diagnosticSettings?api-version=$api")
-        $uncovered = @(Get-UncoveredCategories $settings $categories)
+        $coverage = Get-DiagnosticCoverage $settings $categories
+        $uncovered = $coverage.Missing
         if (-not $uncovered.Count) { $complete++ }
         $coveredCount += $categories.Count - $uncovered.Count
-        foreach ($setting in $settings) {
-            if ((Get-Field $setting.properties 'workspaceId' '') -eq $script:WorkspaceId) {
-                $names.Add("$scope/$($setting.name)")
-            }
-        }
-        $details.Add("${scope}: covered=$($categories.Count - $uncovered.Count)/$($categories.Count); missing=$($uncovered -join ', ')")
+        foreach ($name in $coverage.Names) { $names.Add("$scope/$name") }
+        $details.Add("${scope}: covered=$($categories.Count - $uncovered.Count)/$($categories.Count); missing=$($uncovered -join ', '); covering settings=$($coverage.Names -join ', '); setting count=$($coverage.Count)/5")
     }
     $allCoverageUnknown = $key -eq 'EntraDiagnostics' -and (Get-EntraLogSelection).UsedReferenceFallback
     @{
@@ -4302,7 +5313,15 @@ function Invoke-NewConnectorConfiguration($BeforeSnapshot, $AfterSnapshot) {
 Step 'Prerequisites'
 if ($PSVersionTable.PSVersion -lt [version]'7.2') { throw 'PowerShell 7.2+ is required.' }
 'Az.Accounts', 'Az.Resources', 'Az.OperationalInsights' | ForEach-Object { Ensure-Module $_ }
-if (-not $ConnectorStatusOnly -and -not $ContentStatusOnly -and -not $ConfigureConnectorsOnly -and -not (Get-Command git -ErrorAction SilentlyContinue)) { throw 'git is unavailable.' }
+if ($InstallPrerequisitesOnly -or ($DeployPreviewDetections -and -not $WhatIfPreference)) { Test-PreviewDetectionPrerequisites }
+if (($InstallPrerequisitesOnly -or (-not $ConnectorStatusOnly -and -not $ContentStatusOnly -and -not $ConfigureConnectorsOnly)) -and
+    -not (Get-Command git -ErrorAction SilentlyContinue)) {
+    throw 'Git is unavailable. PowerShell Cloud Shell supplies Git; on another host install Git using its approved operating-system package manager, then rerun. No cloud setup was attempted.'
+}
+if ($InstallPrerequisitesOnly) {
+    Write-Host "Prerequisite setup complete. No Azure/Graph sign-in or cloud writes attempted. Log file: $LogPath" -ForegroundColor Green
+    return
+}
 Ensure-AzureLogin
 
 Step 'Select target environment'
@@ -4337,6 +5356,7 @@ if ($ConfigureConnectorPolicies -and -not $PSBoundParameters.ContainsKey('Connec
     $ConnectorPolicyScopeIds = @("/subscriptions/$script:SubscriptionId")
     Write-Host "Connector policy scope defaults to Sentinel subscription: $($ConnectorPolicyScopeIds[0])" -ForegroundColor Cyan
 }
+if ($DeployPreviewDetections) { Initialize-PreviewDetectionSupport }
 $runError = $null
 $reportError = $null
 $noAttemptReason = 'No configuration action recorded for this connector; this inventory observation is not a configuration success.'
@@ -4427,6 +5447,7 @@ if ($missing.Count -gt 0) {
 }
 Write-Host 'Requested package versions were verified in this workspace. Detailed artifact checks, runtime rules/workbooks and connector/source ingestion have separate outcomes above.' -ForegroundColor Green
 }
+if ($DeployPreviewDetections) { Invoke-PreviewDetectionConfiguration $RequestedSolutions }
 } catch {
     $runError = $_
     $noAttemptReason = 'No connector configuration action was recorded before the run stopped. Deployment/configuration encountered an error; this is not proof of connector failure.'
@@ -4441,6 +5462,16 @@ Write-Host 'Requested package versions were verified in this workspace. Detailed
     $script:CurrentRecord = $null
     $script:Operation = @{}
     Add-ContentHubPackageDiagnosticRows
+    foreach ($failure in @($script:ContentHubDeploymentFailures.Values)) {
+        if ($script:ContentHubRuleFailures.ContainsKey($failure.ResourceId)) { continue }
+        $http = if ($null -eq $failure.HttpStatus) { 'No HTTP response (local preflight/client failure)' } else { "HTTP $($failure.HttpStatus)" }
+        Add-ConnectorResult "Content deployment / $($failure.ResourceId)" 'Failed' "$http; AzureCode=$($failure.AzureErrorCode); $($failure.Reason); requestId=$($failure.RequestId)" 'Resolve the recorded package/API failure and rerun. Connector configuration may not have been reached; see individual inventory/action rows.' @{
+            Attempted = [bool](Get-ContentHubField $failure 'WriteAttempted'); Verified = $false; ConnectorStatus = 'Not applicable (content deployment)'
+        }
+        $row = $script:ConnectorReport[$script:ConnectorReport.Count - 1]
+        $row.RowType = 'Content'
+        $row | Add-Member -NotePropertyName ContentFailure -NotePropertyValue $failure
+    }
     foreach ($failure in @($script:ContentHubRuleFailures.Values)) {
         $label = if ($failure.RuleName) { $failure.RuleName } else { $failure.ResourceId.Split('/')[-1] }
         Add-ConnectorResult "Analytics rule / $label" 'Failed' "HTTP $($failure.HttpStatus); AzureCode=$($failure.AzureErrorCode); $($failure.Reason); requestId=$($failure.RequestId); resource=$($failure.ResourceId)" 'Rule deployment did not succeed. Resolve validation/source prerequisites and rerun; connector actions are reported separately.' @{
@@ -4478,5 +5509,33 @@ if ($failedConnectors.Count -gt 0) {
 if ($script:ContentHubRuleFailures.Count -gt 0) {
     throw "$($script:ContentHubRuleFailures.Count) analytics rule(s) failed validation. Connector configuration was processed separately; review its Action outcomes and the Content rows in the saved report. The run is incomplete."
 }
+if ($DeployPreviewDetections -and $script:PreviewDetectionFailures -gt 0) {
+    throw "$script:PreviewDetectionFailures preview detection operation(s) failed. Inspect Content rows and the preview ownership journal; no rules were automatically enabled."
+}
 
 Write-Warning 'Connector configuration status is ARM configuration/read-back only. Verify source permissions, licensing, consent, audit/export settings and data ingestion separately.'
+    Write-Host "Run completed. Log file: $LogPath" -ForegroundColor Cyan
+} catch {
+    $transcriptRunError = $_
+    if ($runTranscriptStarted) {
+        # Rethrowing alone can display the exception only after the transcript has stopped.
+        Write-Host "Run failed: $($_.Exception.Message)" -ForegroundColor Red
+        Write-Host "Error ID: $($_.FullyQualifiedErrorId)"
+        if ($_.ErrorDetails -and $_.ErrorDetails.Message) { Write-Host "Error details: $($_.ErrorDetails.Message)" }
+        if ($_.ScriptStackTrace) { Write-Host "Error stack: $($_.ScriptStackTrace)" }
+        Write-Host "Failure details captured in: $LogPath" -ForegroundColor Cyan
+    }
+    throw
+} finally {
+    if ($DeployPreviewDetections -and (Get-Command Close-PreviewDetectionSupport -CommandType Function -ErrorAction SilentlyContinue)) {
+        Close-PreviewDetectionSupport
+    }
+    if ($runTranscriptStarted) {
+        try { $null = Stop-Transcript -WhatIf:$false -Confirm:$false -ErrorAction Stop }
+        catch {
+            if ($transcriptRunError) {
+                Write-Warning "Could not finalize run log $LogPath; the original run error is preserved. $($_.Exception.Message)"
+            } else { throw }
+        }
+    }
+}
