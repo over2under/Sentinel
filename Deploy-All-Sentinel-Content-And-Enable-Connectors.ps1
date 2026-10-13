@@ -178,6 +178,12 @@ ingestion enabled and a single Microsoft-CopilotActivity stream. Existing networ
 restrictions/routing are never weakened. Partial failures leave resources for
 inspection/rerun; no automatic rollback. Requires Monitor DCR/DCE write permission
 and Copilot/unified-audit licensing and source consent.
+PurviewAudit GET can return tenantId=sourceType and dcrConfig=null, as documented
+in Microsoft's REST examples. This response alone is not a failed write. The
+adapter verifies runtime identity/source/enabled state and independently verifies
+DCR/DCE resources for new setup. Hidden runtime-to-DCR bindings and ingestion
+remain explicitly unverified. Enabled existing sources with hidden bindings are
+preserved, never retargeted; disabled sources with hidden bindings need portal review.
 .PARAMETER ConfigureConnectorPolicies
 Opt into reviewed Activity/NSG/Storage DeployIfNotExists assignments, pinned to a
 validated live definition version and schema hash. Existing resources are excluded
@@ -3972,6 +3978,26 @@ function Test-CopilotSource($Resource) {
         (Get-Field $p 'sourceType' '') -eq 'CopilotGeneral'
 }
 
+function Get-CopilotRuntimeMismatch($Resource, [string]$Id, $Dce = $null, $Dcr = $null) {
+    $p = Get-Field $Resource 'properties' @{}
+    if ((Get-Field $Resource 'id' '') -ne $Id) { 'id' }
+    if (-not (Test-CopilotSource $Resource)) { 'kind/connectorDefinitionName/sourceType' }
+    $tenant = [string](Get-Field $p 'tenantId' '')
+    if ($tenant -ne $script:TenantId -and $tenant -cne 'CopilotGeneral') { 'properties.tenantId' }
+    if ((Get-Field (Get-Field (Get-Field $p 'dataTypes' @{}) 'logs' @{}) 'state' '') -ne 'Enabled') {
+        'properties.dataTypes.logs.state'
+    }
+    $config = Get-Field $p 'dcrConfig'
+    if ($null -ne $config -and ($config -isnot [Collections.IDictionary] -or $config.Count)) {
+        if ($config -isnot [Collections.IDictionary]) { 'properties.dcrConfig (invalid schema)' }
+        else {
+            if ((Get-Field $config 'streamName' '') -cne 'LLMACTIVITY_RESTAPI') { 'properties.dcrConfig.streamName' }
+            if ($Dce -and (Get-Field $config 'dataCollectionEndpoint' '') -cne $Dce.properties.logsIngestion.endpoint) { 'properties.dcrConfig.dataCollectionEndpoint' }
+            if ($Dcr -and (Get-Field $config 'dataCollectionRuleImmutableId' '') -cne $Dcr.properties.immutableId) { 'properties.dcrConfig.dataCollectionRuleImmutableId' }
+        }
+    }
+}
+
 function Stop-CopilotSetup([string]$Message) {
     $exception = [InvalidOperationException]::new($Message)
     $exception.Data['CopilotActionRequired'] = $true
@@ -4053,12 +4079,38 @@ function Enable-CopilotConnector([string]$Label, $Record) {
         $enabled = $false
         if ($Record.Instances.Count) {
             $existing = $Record.Instances[0]
-            if ((Get-Field $existing.properties 'tenantId' '') -ne $script:TenantId) { Stop-CopilotSetup 'Existing Copilot tenant is missing/different; no retargeting.' }
+            $returnedTenant = [string](Get-Field $existing.properties 'tenantId' '')
+            if ($returnedTenant -ne $script:TenantId -and $returnedTenant -cne 'CopilotGeneral') { Stop-CopilotSetup 'Existing Copilot tenant is missing/different; no retargeting.' }
             $name = $existing.name
+            $runtimePath = "$script:SentinelId/dataConnectors/${name}?api-version=$PreviewApiVersion"
+            $existing = Read-Arm $runtimePath
+            if ((Get-Field $existing 'id' '') -ne "$script:SentinelId/dataConnectors/$name" -or -not (Test-CopilotSource $existing)) {
+                Stop-CopilotSetup 'Existing Copilot runtime identity/source changed; refresh inventory before any write.'
+            }
+            $returnedTenant = [string](Get-Field $existing.properties 'tenantId' '')
+            if ($returnedTenant -ne $script:TenantId -and $returnedTenant -cne 'CopilotGeneral') { Stop-CopilotSetup 'Existing Copilot tenant is missing/different; no retargeting.' }
             $body.properties = ConvertFrom-Json (ConvertTo-Json $existing.properties -Depth 100) -AsHashtable
+            # PurviewAudit returns a source-label tenant alias; only the selected directory GUID belongs in a write.
+            $body.properties.tenantId = $script:TenantId
             if ($existing.Contains('etag')) { $body.etag = $existing.etag }
             $oldConfig = Get-Field $body.properties 'dcrConfig' @{}
+            if ($null -eq $oldConfig) { $oldConfig = @{} }
+            if ($oldConfig -isnot [Collections.IDictionary]) { Stop-CopilotSetup 'Existing Copilot dcrConfig schema is unsupported; no write submitted.' }
             $enabled = (Get-Field (Get-Field (Get-Field $body.properties 'dataTypes' @{}) 'logs' @{}) 'state' '') -eq 'Enabled'
+            if (-not $oldConfig.Count) {
+                if (-not $enabled) {
+                    Stop-CopilotSetup 'Existing disabled Copilot runtime does not expose its DCR binding. Review/connect it on the connector page; the script will not overwrite an unknown prior binding.'
+                }
+                $mismatch = @(Get-CopilotRuntimeMismatch $existing "$script:SentinelId/dataConnectors/$name")
+                if ($mismatch.Count) { Stop-CopilotSetup "Existing Copilot runtime verification failed at: $($mismatch -join ', ')." }
+                $script:Operation.Verified = $true
+                $script:Operation.Existing = "Exact MicrosoftCopilot/CopilotGeneral runtime $name reports enabled. PurviewAudit tenant source alias and hidden dcrConfig match the documented response shape; runtime DCR binding/ingestion not verified."
+                $script:Operation.Verification = 'ARM GET verified exact runtime ID, Copilot source and enabled state only. Hidden DCR/DCE binding and ingestion cannot be inferred from this GET.'
+                $script:Operation.ConnectorStatus = 'Enabled (runtime binding/ingestion unverified)'
+                $script:Operation.PolicyOrDiagnosticSetting = "Copilot runtime $name; DCR binding not returned by API"
+                Add-ConnectorResult $Label 'AlreadyConfigured' 'Enabled Copilot runtime preserved. GET omits DCR bindings by documented PurviewAudit behavior; no repeated PUT, DCR/DCE creation or retargeting performed.' (Get-SetupGuidance 'MicrosoftCopilot')
+                return
+            }
         } elseif (@($script:Inventory | Where-Object name -eq $name).Count) { Stop-CopilotSetup 'Copilot resource-name collision.' }
         $oldImmutable = [string](Get-Field $oldConfig 'dataCollectionRuleImmutableId' '')
         $oldEndpoint = [string](Get-Field $oldConfig 'dataCollectionEndpoint' '')
@@ -4141,17 +4193,20 @@ function Enable-CopilotConnector([string]$Label, $Record) {
             $null = Read-Arm $path 'PUT' $body
             $script:Operation.Accepted = $true
         }
-        $actual = Read-Arm $path
-        $p = Get-Field $actual 'properties' @{}
-        $config = Get-Field $p 'dcrConfig' @{}
-        if (-not (Test-CopilotSource $actual) -or (Get-Field $p 'tenantId' '') -ne $script:TenantId -or
-            (Get-Field (Get-Field (Get-Field $p 'dataTypes' @{}) 'logs' @{}) 'state' '') -ne 'Enabled' -or
-            (Get-Field $config 'dataCollectionEndpoint' '') -cne $dce.properties.logsIngestion.endpoint -or
-            (Get-Field $config 'dataCollectionRuleImmutableId' '') -cne $dcr.properties.immutableId -or
-            (Get-Field $config 'streamName' '') -cne 'LLMACTIVITY_RESTAPI') { throw 'Copilot runtime read-back mismatch.' }
+        for ($poll = 0; $poll -lt 6; $poll++) {
+            $actual = Read-Arm $path
+            $mismatch = @(Get-CopilotRuntimeMismatch $actual "$script:SentinelId/dataConnectors/$name" $dce $dcr)
+            if (-not $mismatch.Count) { break }
+            if ($poll -lt 5) { Start-Sleep -Seconds 5 }
+        }
+        if ($mismatch.Count) { throw "Copilot runtime read-back mismatch at: $($mismatch -join ', '). No repeated PUT submitted; inspect runtime and dependencies before rerunning." }
+        $returnedConfig = Get-Field (Get-Field $actual 'properties' @{}) 'dcrConfig'
+        $bindingVisible = $returnedConfig -is [Collections.IDictionary] -and $returnedConfig.Count -gt 0
         $script:Operation.Verified = $true
-        $script:Operation.Verification = 'ARM GET verified Copilot runtime and DCR/DCE routing; ingestion not verified.'
-        $script:Operation.ConnectorStatus = 'Enabled (ingestion unverified)'
+        $script:Operation.Verification = 'ARM GET verified exact Copilot runtime/source/enabled state and independent DCR/DCE configuration. ' +
+            $(if ($bindingVisible) { 'Returned runtime DCR binding matches those dependencies.' } else { 'PurviewAudit GET omits runtime DCR binding; submitted configuration was accepted but that hidden binding is not read-back verified.' }) +
+            ' Ingestion not verified.'
+        $script:Operation.ConnectorStatus = if ($bindingVisible) { 'Enabled (ingestion unverified)' } else { 'Enabled (runtime binding/ingestion unverified)' }
         Add-ConnectorResult $Label $(if ($enabled) { 'AlreadyConfigured' } else { 'Configured' }) $script:Operation.Verification (Get-SetupGuidance 'MicrosoftCopilot')
     } catch {
         if (-not $_.Exception.Data['CopilotActionRequired']) { throw }
@@ -4731,6 +4786,14 @@ function Get-ConnectorRecordEvidence($Record) {
                 $status = 'Not configured'
                 $policyOrSetting = 'N/A (native connector)'
             }
+        } elseif ($Record.Instances.Count -eq 1 -and (Test-CopilotSource $Record.Instances[0])) {
+            $runtime = $Record.Instances[0]
+            $runtimeId = "$script:SentinelId/dataConnectors/$($runtime.name)"
+            $mismatch = @(Get-CopilotRuntimeMismatch $runtime $runtimeId)
+            $status = if (-not $mismatch.Count) { 'Enabled (runtime binding/ingestion unverified)' }
+                else { 'Runtime exists; Copilot configuration requires review' }
+            $existing = "MicrosoftCopilot/CopilotGeneral runtime $($runtime.name); observed enabled state assessed. PurviewAudit GET may return a source-label tenant alias and omit dcrConfig; runtime DCR binding and ingestion not verified."
+            $policyOrSetting = "Copilot runtime $($runtime.name)"
         } elseif ($Record.Instances.Count -gt 0) {
             $runtimeStates = @($Record.Instances | ForEach-Object {
                 $kind = [string](Get-Field $_ 'kind' 'UnknownKind')
@@ -4867,7 +4930,7 @@ function Get-ConnectorRequirementReview($Record, $Evidence, [object[]]$Actions) 
         }
         Add-RequirementStage 'SourceScopeAndPermissions' $true 'ManualVerification' 'Selected ARM categories/routing are verified separately from source-side activity and business authorization.' $inputs
     } elseif ($key -eq 'MicrosoftCopilot') {
-        Add-RequirementStage 'CopilotDcrDceRuntime' $true $sourceState 'Exact MicrosoftCopilot/CopilotGeneral PurviewAudit adapter verifies DCR/DCE routing and activates the Sentinel runtime API; no /connect, credentials or Logic App connections.' @($(if (-not $ConfigureCopilot) { 'Explicit -ConfigureCopilot approval; optional compatible CopilotDataCollectionRuleId/CopilotDataCollectionEndpointId' })) $proof
+        Add-RequirementStage 'CopilotDcrDceRuntime' $true $sourceState 'MicrosoftCopilot/CopilotGeneral runtime enabled-state is assessed separately from DCR/DCE resources. PurviewAudit GET can omit runtime bindings; hidden bindings and ingestion are never inferred as verified. No /connect, credentials or Logic App connections.' @($(if (-not $ConfigureCopilot) { 'Explicit -ConfigureCopilot approval; optional compatible CopilotDataCollectionRuleId/CopilotDataCollectionEndpointId' })) $proof
         Add-RequirementStage 'SourceAuthorizationAndAudit' $true 'ManualVerification' 'Copilot licensing, unified audit logging and active Security Administrator/Global Administrator source authorization are not provisioned or inferred.' @('Verify eligible Copilot license, tenant consent/auditing and CopilotActivity generation.')
     } elseif ($key -eq 'WindowsSecurityEvents') {
         Add-RequirementStage 'AmaDcrMachineAssociation' $true $sourceState 'Explicit Windows Azure VM adapter validates/provisions the SecurityEvent DCR, optionally installs missing AMA, and associates selected machines. No implicit fleet scope.' @($(if (-not $WindowsSecurityEventMachineIds.Count) { 'WindowsSecurityEventMachineIds plus approved XPath queries or an existing WindowsSecurityEventDcrId' })) $proof
