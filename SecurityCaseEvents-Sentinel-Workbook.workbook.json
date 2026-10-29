@@ -1,0 +1,332 @@
+{
+  "version": "Notebook/1.0",
+  "items": [
+    {
+      "type": 1,
+      "content": {
+        "json": "# ISOC SecurityCaseEvents workbook\n\n## Overview\nThis workbook helps SOC analysts monitor and manage investigations using **SecurityCaseEvent** data in Microsoft Defender Advanced Hunting.\n\nThis page is designed to be practical for day-to-day operations: it shows what is active now, where investigations may be slowing down, and where response follow-through needs attention.\n\nIf you're new to case analytics, think of this workbook as a guided dashboard that turns raw event history into operational signals:\n- It shows your current case inventory.\n- It highlights stalled investigations and overdue tasks.\n- It summarizes SLA and priority posture.\n- It helps you reconstruct event timelines for deeper review.\n\n## How to use this workbook\nUse this section as a simple runbook: start with context selection, then move from broad visibility to focused triage. The sequence below helps you identify risk quickly and decide where to act first.\n\n1. Select your **Subscription** and **Advanced hunting workspace** at the top.\n2. Set the **lookback days** for each section (for example, 7, 14, or 30 days).\n3. Start with **Case backlog monitoring** to understand active cases.\n4. Review **Stalled investigation detection** and **Overdue investigation tasks** to find action gaps.\n5. Use **High-priority case monitoring** to focus on urgent work.\n6. Use **Investigation timeline reconstruction** with a Case ID when you need a detailed sequence of events.\n\n## Notes for beginners\nThese guidelines help explain why a panel may look empty or different from expectations, especially during first-time setup or narrow time windows.\n\n- \"No results\" in a section can mean either there is no matching data in that time window, or the selected workspace does not contain that event type.\n- Start with a wider window (for example, 30 days) if a section is empty.\n- Use the section descriptions under each panel to understand exactly what each query is measuring."
+      },
+      "name": "a80f1c7c-b9f6-4d90-98ea-0e7b7c4f1c21"
+    },
+    {
+      "type": 9,
+      "content": {
+        "version": "KqlParameterItem/1.0",
+        "parameters": [
+          {
+            "id": "b44a32fd-8a18-4df1-9175-98d2fc18f34d",
+            "version": "KqlParameterItem/1.0",
+            "name": "Subscriptions",
+            "label": "Subscriptions",
+            "type": 6,
+            "isRequired": true,
+            "multiSelect": true,
+            "value": [
+              "value::all"
+            ],
+            "typeSettings": {
+              "additionalResourceOptions": [
+                "value::all"
+              ],
+              "selectAllValue": "All"
+            }
+          },
+          {
+            "id": "a14a708b-d09d-44a6-bab0-5d4be846acf6",
+            "version": "KqlParameterItem/1.0",
+            "name": "HuntingWorkspaceId",
+            "label": "Advanced hunting workspace",
+            "type": 2,
+            "isRequired": true,
+            "query": "Resources | where type =~ \"microsoft.operationalinsights/workspaces\" | extend WorkspaceId=tostring(properties.customerId) | where isnotempty(WorkspaceId) | order by name asc | project value=WorkspaceId, label=id, group=resourceGroup",
+            "queryType": 1,
+            "resourceType": "microsoft.resourcegraph/resources",
+            "crossComponentResources": [
+              "{Subscriptions}"
+            ]
+          },
+          {
+            "id": "6c725d89-67a4-4b72-9321-5f93e6ce0e7f",
+            "version": "KqlParameterItem/1.0",
+            "name": "SeverityFilter",
+            "type": 2,
+            "label": "Severity filter",
+            "value": "All",
+            "isRequired": true,
+            "jsonData": "[{\"value\":\"All\",\"label\":\"All severities\"},{\"value\":\"Critical\",\"label\":\"Critical\"},{\"value\":\"High\",\"label\":\"High\"},{\"value\":\"Medium\",\"label\":\"Medium\"},{\"value\":\"Low\",\"label\":\"Low\"}]"
+          },
+          {
+            "id": "24b77725-9e6f-4f13-a71e-1814d0b1f238",
+            "version": "KqlParameterItem/1.0",
+            "name": "InactiveDays",
+            "type": 1,
+            "label": "Inactive threshold (days)",
+            "value": "3",
+            "isRequired": true
+          },
+          {
+            "id": "741b84c6-1c6c-48da-9b93-f7a7197e2a0d",
+            "version": "KqlParameterItem/1.0",
+            "name": "CaseFilter",
+            "type": 1,
+            "label": "Case ID filter (optional)",
+            "value": "",
+            "isRequired": false
+          },
+          {
+            "id": "9304136d-e527-4e8e-84b0-cd6b27facfae",
+            "version": "KqlParameterItem/1.0",
+            "name": "BacklogDays",
+            "type": 1,
+            "label": "Backlog lookback (days)",
+            "value": "30",
+            "isRequired": true
+          },
+          {
+            "id": "d4990c5e-76f2-4095-87bb-e453068e51d8",
+            "version": "KqlParameterItem/1.0",
+            "name": "StalledLookbackDays",
+            "type": 1,
+            "label": "Stalled-case lookback (days)",
+            "value": "30",
+            "isRequired": true
+          },
+          {
+            "id": "a212a401-223d-4ce9-8362-cd67a6c0cde9",
+            "version": "KqlParameterItem/1.0",
+            "name": "SlaLookbackDays",
+            "type": 1,
+            "label": "SLA lookback (days)",
+            "value": "30",
+            "isRequired": true
+          },
+          {
+            "id": "baee017b-c350-4317-ad9a-7cb6281868f7",
+            "version": "KqlParameterItem/1.0",
+            "name": "HighPriorityLookbackDays",
+            "type": 1,
+            "label": "High-priority lookback (days)",
+            "value": "30",
+            "isRequired": true
+          },
+          {
+            "id": "622a83b9-c6e5-4c9c-88ab-6435e34cdece",
+            "version": "KqlParameterItem/1.0",
+            "name": "OverdueLookbackDays",
+            "type": 1,
+            "label": "Overdue-task lookback (days)",
+            "value": "30",
+            "isRequired": true
+          },
+          {
+            "id": "de9abad3-e12f-4963-bec4-a4679f9b7559",
+            "version": "KqlParameterItem/1.0",
+            "name": "WorkloadLookbackDays",
+            "type": 1,
+            "label": "Workload lookback (days)",
+            "value": "30",
+            "isRequired": true
+          },
+          {
+            "id": "ad947b72-d3de-4131-a722-018b184a6d06",
+            "version": "KqlParameterItem/1.0",
+            "name": "TimelineLookbackDays",
+            "type": 1,
+            "label": "Timeline lookback (days)",
+            "value": "30",
+            "isRequired": true
+          }
+        ],
+        "style": "pills",
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces"
+      },
+      "name": "50d5dc4f-4b92-4635-8306-4f35cf5857a0"
+    },
+    {
+      "type": 1,
+      "content": {
+        "json": "## Case backlog monitoring\n\nShows the latest non-deleted case state (name, status, severity, priority, owner, type) from SecurityCaseEvent updates. Use this view as the operational inventory of active cases."
+      },
+      "name": "section-desc-case-backlog-monitoring"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "title": "Case backlog monitoring",
+        "query": "{\"__advancedHuntingSettings\":true,\"query\":\"let lookback = 1d * toint('{BacklogDays}');\\nlet DeletedCases =\\n    SecurityCaseEvent\\n    | where TimeGenerated >= ago(lookback)\\n    | where EntityType == \\\"Case\\\"\\n    | summarize arg_max(EventTime, IsDeleted, OperationName) by EntityId\\n    | where IsDeleted == true or OperationName == \\\"Delete\\\"\\n    | project CaseId = EntityId;\\nlet CaseState =\\n    SecurityCaseEvent\\n    | where TimeGenerated >= ago(lookback)\\n    | where EntityType == \\\"Case\\\"\\n    | where OperationName in (\\\"Create\\\", \\\"Update\\\")\\n    | mv-expand PropertyNames, NewValues\\n    | extend Property = tostring(PropertyNames), Value = tostring(NewValues)\\n    | where Property in (\\\"displayName\\\", \\\"caseStatus.statusName\\\", \\\"caseStatus.topLevelStatusName\\\", \\\"severity\\\", \\\"priority\\\", \\\"assignedTo\\\", \\\"caseType\\\", \\\"sla.status\\\", \\\"sla.policyName\\\")\\n    | summarize arg_max(EventTime, Value) by EntityId, Property\\n    | summarize\\n        CaseName = take_anyif(Value, Property == \\\"displayName\\\"),\\n        Status = take_anyif(Value, Property == \\\"caseStatus.statusName\\\"),\\n        TopLevelStatus = take_anyif(Value, Property == \\\"caseStatus.topLevelStatusName\\\"),\\n        Severity = take_anyif(Value, Property == \\\"severity\\\"),\\n        Priority = take_anyif(Value, Property == \\\"priority\\\"),\\n        AssignedTo = take_anyif(Value, Property == \\\"assignedTo\\\"),\\n        CaseType = take_anyif(Value, Property == \\\"caseType\\\"),\\n        SlaStatus = take_anyif(Value, Property == \\\"sla.status\\\"),\\n        SlaPolicy = take_anyif(Value, Property == \\\"sla.policyName\\\")\\n      by CaseId = EntityId\\n    | join kind=leftanti DeletedCases on CaseId;CaseState\\n| where '{SeverityFilter}' == 'All' or Severity =~ '{SeverityFilter}'\\n| project CaseId, CaseName, Status, TopLevelStatus, Severity, Priority, AssignedTo, CaseType\\n| order by Severity asc, Priority asc, CaseName asc\",\"selectedWorkspaceIds\":[\"{HuntingWorkspaceId}\"]}",
+        "size": 0,
+        "queryType": "advancedHunting",
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "crossComponentResources": [
+          "{HuntingWorkspaceId:label}"
+        ],
+        "visualization": "table",
+        "gridSettings": {
+          "filter": true,
+          "rowLimit": 10000
+        }
+      },
+      "name": "00505fd9-0e1d-4ea9-9432-329c026f0032"
+    },
+    {
+      "type": 1,
+      "content": {
+        "json": "## Stalled investigation detection\n\nFinds cases with no recent case-event activity. It combines the selected lookback window with the inactivity threshold to highlight potential investigation drift."
+      },
+      "name": "section-desc-stalled-investigation-detection"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "title": "Stalled investigation detection",
+        "query": "{\"__advancedHuntingSettings\":true,\"query\":\"let lookback = 1d * toint('{StalledLookbackDays}');\\nlet DeletedCases =\\n    SecurityCaseEvent\\n    | where TimeGenerated >= ago(lookback)\\n    | where EntityType == \\\"Case\\\"\\n    | summarize arg_max(EventTime, IsDeleted, OperationName) by EntityId\\n    | where IsDeleted == true or OperationName == \\\"Delete\\\"\\n    | project CaseId = EntityId;\\nlet CaseState =\\n    SecurityCaseEvent\\n    | where TimeGenerated >= ago(lookback)\\n    | where EntityType == \\\"Case\\\"\\n    | where OperationName in (\\\"Create\\\", \\\"Update\\\")\\n    | mv-expand PropertyNames, NewValues\\n    | extend Property = tostring(PropertyNames), Value = tostring(NewValues)\\n    | where Property in (\\\"displayName\\\", \\\"caseStatus.statusName\\\", \\\"caseStatus.topLevelStatusName\\\", \\\"severity\\\", \\\"priority\\\", \\\"assignedTo\\\", \\\"caseType\\\", \\\"sla.status\\\", \\\"sla.policyName\\\")\\n    | summarize arg_max(EventTime, Value) by EntityId, Property\\n    | summarize\\n        CaseName = take_anyif(Value, Property == \\\"displayName\\\"),\\n        Status = take_anyif(Value, Property == \\\"caseStatus.statusName\\\"),\\n        TopLevelStatus = take_anyif(Value, Property == \\\"caseStatus.topLevelStatusName\\\"),\\n        Severity = take_anyif(Value, Property == \\\"severity\\\"),\\n        Priority = take_anyif(Value, Property == \\\"priority\\\"),\\n        AssignedTo = take_anyif(Value, Property == \\\"assignedTo\\\"),\\n        CaseType = take_anyif(Value, Property == \\\"caseType\\\"),\\n        SlaStatus = take_anyif(Value, Property == \\\"sla.status\\\"),\\n        SlaPolicy = take_anyif(Value, Property == \\\"sla.policyName\\\")\\n      by CaseId = EntityId\\n    | join kind=leftanti DeletedCases on CaseId;let Threshold = toint('{InactiveDays}');\\nlet LastActivity =\\n    SecurityCaseEvent\\n    | where TimeGenerated >= ago(lookback)\\n    | where EntityType == \\\"Case\\\"\\n    | summarize LastActivity=max(EventTime) by CaseId=EntityId;\\nCaseState\\n| join kind=leftouter LastActivity on CaseId\\n| extend InactiveDays = datetime_diff('day', now(), LastActivity)\\n| where InactiveDays >= Threshold\\n| project CaseId, CaseName, Status, LastActivity, InactiveDays\\n| order by InactiveDays desc\",\"selectedWorkspaceIds\":[\"{HuntingWorkspaceId}\"]}",
+        "size": 0,
+        "queryType": "advancedHunting",
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "crossComponentResources": [
+          "{HuntingWorkspaceId:label}"
+        ],
+        "visualization": "table",
+        "gridSettings": {
+          "filter": true,
+          "rowLimit": 10000
+        }
+      },
+      "name": "9510f47c-c66e-454e-ac87-19af544d8f7b"
+    },
+    {
+      "type": 1,
+      "content": {
+        "json": "## SLA compliance status distribution\n\nSummarizes latest SLA status values captured in case events. Use this chart to spot breached, at-risk, or unknown SLA posture patterns."
+      },
+      "name": "section-desc-sla-compliance-status-distribution"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "title": "SLA compliance status distribution",
+        "query": "{\"__advancedHuntingSettings\":true,\"query\":\"let lookback = 1d * toint('{SlaLookbackDays}');\\nlet DeletedCases =\\n    SecurityCaseEvent\\n    | where TimeGenerated >= ago(lookback)\\n    | where EntityType == \\\"Case\\\"\\n    | summarize arg_max(EventTime, IsDeleted, OperationName) by EntityId\\n    | where IsDeleted == true or OperationName == \\\"Delete\\\"\\n    | project CaseId = EntityId;\\nlet CaseState =\\n    SecurityCaseEvent\\n    | where TimeGenerated >= ago(lookback)\\n    | where EntityType == \\\"Case\\\"\\n    | where OperationName in (\\\"Create\\\", \\\"Update\\\")\\n    | mv-expand PropertyNames, NewValues\\n    | extend Property = tostring(PropertyNames), Value = tostring(NewValues)\\n    | where Property in (\\\"displayName\\\", \\\"caseStatus.statusName\\\", \\\"caseStatus.topLevelStatusName\\\", \\\"severity\\\", \\\"priority\\\", \\\"assignedTo\\\", \\\"caseType\\\", \\\"sla.status\\\", \\\"sla.policyName\\\")\\n    | summarize arg_max(EventTime, Value) by EntityId, Property\\n    | summarize\\n        CaseName = take_anyif(Value, Property == \\\"displayName\\\"),\\n        Status = take_anyif(Value, Property == \\\"caseStatus.statusName\\\"),\\n        TopLevelStatus = take_anyif(Value, Property == \\\"caseStatus.topLevelStatusName\\\"),\\n        Severity = take_anyif(Value, Property == \\\"severity\\\"),\\n        Priority = take_anyif(Value, Property == \\\"priority\\\"),\\n        AssignedTo = take_anyif(Value, Property == \\\"assignedTo\\\"),\\n        CaseType = take_anyif(Value, Property == \\\"caseType\\\"),\\n        SlaStatus = take_anyif(Value, Property == \\\"sla.status\\\"),\\n        SlaPolicy = take_anyif(Value, Property == \\\"sla.policyName\\\")\\n      by CaseId = EntityId\\n    | join kind=leftanti DeletedCases on CaseId;CaseState\\n| extend SlaStatus = iff(isempty(SlaStatus), \\\"Unknown\\\", SlaStatus)\\n| summarize Cases=count() by SlaStatus\\n| order by Cases desc\",\"selectedWorkspaceIds\":[\"{HuntingWorkspaceId}\"]}",
+        "size": 0,
+        "queryType": "advancedHunting",
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "crossComponentResources": [
+          "{HuntingWorkspaceId:label}"
+        ],
+        "visualization": "barchart"
+      },
+      "name": "d34f5609-dd9d-4fd8-b4f4-6ef37f94f935",
+      "customWidth": "45"
+    },
+    {
+      "type": 1,
+      "content": {
+        "json": "## High-priority case monitoring\n\nLists current high-severity or high-priority cases so analysts can quickly focus on urgent investigations and verify assignment/status hygiene."
+      },
+      "name": "section-desc-high-priority-case-monitoring"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "title": "High-priority case monitoring",
+        "query": "{\"__advancedHuntingSettings\":true,\"query\":\"let lookback = 1d * toint('{HighPriorityLookbackDays}');\\nlet DeletedCases =\\n    SecurityCaseEvent\\n    | where TimeGenerated >= ago(lookback)\\n    | where EntityType == \\\"Case\\\"\\n    | summarize arg_max(EventTime, IsDeleted, OperationName) by EntityId\\n    | where IsDeleted == true or OperationName == \\\"Delete\\\"\\n    | project CaseId = EntityId;\\nlet CaseState =\\n    SecurityCaseEvent\\n    | where TimeGenerated >= ago(lookback)\\n    | where EntityType == \\\"Case\\\"\\n    | where OperationName in (\\\"Create\\\", \\\"Update\\\")\\n    | mv-expand PropertyNames, NewValues\\n    | extend Property = tostring(PropertyNames), Value = tostring(NewValues)\\n    | where Property in (\\\"displayName\\\", \\\"caseStatus.statusName\\\", \\\"caseStatus.topLevelStatusName\\\", \\\"severity\\\", \\\"priority\\\", \\\"assignedTo\\\", \\\"caseType\\\", \\\"sla.status\\\", \\\"sla.policyName\\\")\\n    | summarize arg_max(EventTime, Value) by EntityId, Property\\n    | summarize\\n        CaseName = take_anyif(Value, Property == \\\"displayName\\\"),\\n        Status = take_anyif(Value, Property == \\\"caseStatus.statusName\\\"),\\n        TopLevelStatus = take_anyif(Value, Property == \\\"caseStatus.topLevelStatusName\\\"),\\n        Severity = take_anyif(Value, Property == \\\"severity\\\"),\\n        Priority = take_anyif(Value, Property == \\\"priority\\\"),\\n        AssignedTo = take_anyif(Value, Property == \\\"assignedTo\\\"),\\n        CaseType = take_anyif(Value, Property == \\\"caseType\\\"),\\n        SlaStatus = take_anyif(Value, Property == \\\"sla.status\\\"),\\n        SlaPolicy = take_anyif(Value, Property == \\\"sla.policyName\\\")\\n      by CaseId = EntityId\\n    | join kind=leftanti DeletedCases on CaseId;CaseState\\n| where Severity in~ (\\\"Critical\\\", \\\"High\\\") or Priority in~ (\\\"P0\\\", \\\"P1\\\", \\\"High\\\")\\n| project CaseId, CaseName, Severity, Priority, Status, TopLevelStatus, AssignedTo\\n| order by Severity asc, Priority asc, CaseName asc\",\"selectedWorkspaceIds\":[\"{HuntingWorkspaceId}\"]}",
+        "size": 0,
+        "queryType": "advancedHunting",
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "crossComponentResources": [
+          "{HuntingWorkspaceId:label}"
+        ],
+        "visualization": "table",
+        "gridSettings": {
+          "filter": true,
+          "rowLimit": 10000
+        }
+      },
+      "name": "fc5ce775-b7d4-4945-b98d-f37ffcb4a014",
+      "customWidth": "55"
+    },
+    {
+      "type": 1,
+      "content": {
+        "json": "## Overdue investigation tasks\n\nTracks case-task entities whose due date has passed and are not closed/completed. This helps identify execution blockers in active response workflows."
+      },
+      "name": "section-desc-overdue-investigation-tasks"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "title": "Overdue investigation tasks",
+        "query": "{\"__advancedHuntingSettings\":true,\"query\":\"let lookback = 1d * toint('{OverdueLookbackDays}');\\nlet TaskState =\\n    SecurityCaseEvent\\n    | where TimeGenerated >= ago(lookback)\\n    | where EntityType in (\\\"Task\\\", \\\"CaseTask\\\")\\n    | where OperationName in (\\\"Create\\\", \\\"Update\\\")\\n    | mv-expand PropertyNames, NewValues\\n    | extend\\n        EventTs = coalesce(EventTime, TimeGenerated),\\n        TaskId = tostring(EntityId),\\n        Property = tolower(tostring(PropertyNames)),\\n        Value = tostring(NewValues)\\n    | where Property in (\\\"displayname\\\", \\\"taskname\\\", \\\"title\\\", \\\"status\\\", \\\"duedate\\\", \\\"caseid\\\", \\\"casename\\\")\\n    | summarize arg_max(EventTs, Value) by TaskId, Property\\n    | summarize\\n        TaskName = take_anyif(Value, Property in (\\\"displayname\\\", \\\"taskname\\\", \\\"title\\\")),\\n        TaskStatus = take_anyif(Value, Property == \\\"status\\\"),\\n        DueDateRaw = take_anyif(Value, Property == \\\"duedate\\\"),\\n        CaseId = take_anyif(Value, Property == \\\"caseid\\\"),\\n        CaseName = take_anyif(Value, Property == \\\"casename\\\")\\n      by TaskId\\n    | extend\\n        DueDate = todatetime(DueDateRaw),\\n        CaseId = iff(isempty(CaseId), TaskId, CaseId),\\n        CaseName = iff(isempty(CaseName), CaseId, CaseName),\\n        TaskName = iff(isempty(TaskName), \\\"(unnamed task)\\\", TaskName)\\n    | where isnotnull(DueDate)\\n    | where DueDate < now()\\n    | where isempty(TaskStatus) or TaskStatus !in~ (\\\"Closed\\\", \\\"Completed\\\", \\\"Done\\\", \\\"Resolved\\\")\\n    | project CaseId, CaseName, TaskId, TaskName, DueDate, TaskStatus\\n    | order by DueDate asc;\\nlet ResultCount = toscalar(TaskState | count);\\nunion\\n(TaskState),\\n(print CaseId=\\\"\\\", CaseName=\\\"No overdue tasks found in selected lookback\\\", TaskId=\\\"\\\", TaskName=\\\"\\\", DueDate=datetime(null), TaskStatus=\\\"\\\" | where ResultCount == 0)\",\"selectedWorkspaceIds\":[\"{HuntingWorkspaceId}\"]}",
+        "size": 0,
+        "queryType": "advancedHunting",
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "crossComponentResources": [
+          "{HuntingWorkspaceId:label}"
+        ],
+        "visualization": "table",
+        "gridSettings": {
+          "filter": true,
+          "rowLimit": 10000
+        }
+      },
+      "name": "9ce7db06-ffdb-40db-9d1f-d1c2af5f7f2a"
+    },
+    {
+      "type": 1,
+      "content": {
+        "json": "## Case workload distribution by owner\n\nCounts active cases by owner from latest case state. Use this to rebalance queue pressure and identify unassigned work."
+      },
+      "name": "section-desc-case-workload-distribution-by-owner"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "title": "Case workload distribution by owner",
+        "query": "{\"__advancedHuntingSettings\":true,\"query\":\"let lookback = 1d * toint('{WorkloadLookbackDays}');\\nlet DeletedCases =\\n    SecurityCaseEvent\\n    | where TimeGenerated >= ago(lookback)\\n    | where EntityType == \\\"Case\\\"\\n    | summarize arg_max(EventTime, IsDeleted, OperationName) by EntityId\\n    | where IsDeleted == true or OperationName == \\\"Delete\\\"\\n    | project CaseId = EntityId;\\nlet CaseState =\\n    SecurityCaseEvent\\n    | where TimeGenerated >= ago(lookback)\\n    | where EntityType == \\\"Case\\\"\\n    | where OperationName in (\\\"Create\\\", \\\"Update\\\")\\n    | mv-expand PropertyNames, NewValues\\n    | extend Property = tostring(PropertyNames), Value = tostring(NewValues)\\n    | where Property in (\\\"displayName\\\", \\\"caseStatus.statusName\\\", \\\"caseStatus.topLevelStatusName\\\", \\\"severity\\\", \\\"priority\\\", \\\"assignedTo\\\", \\\"caseType\\\", \\\"sla.status\\\", \\\"sla.policyName\\\")\\n    | summarize arg_max(EventTime, Value) by EntityId, Property\\n    | summarize\\n        CaseName = take_anyif(Value, Property == \\\"displayName\\\"),\\n        Status = take_anyif(Value, Property == \\\"caseStatus.statusName\\\"),\\n        TopLevelStatus = take_anyif(Value, Property == \\\"caseStatus.topLevelStatusName\\\"),\\n        Severity = take_anyif(Value, Property == \\\"severity\\\"),\\n        Priority = take_anyif(Value, Property == \\\"priority\\\"),\\n        AssignedTo = take_anyif(Value, Property == \\\"assignedTo\\\"),\\n        CaseType = take_anyif(Value, Property == \\\"caseType\\\"),\\n        SlaStatus = take_anyif(Value, Property == \\\"sla.status\\\"),\\n        SlaPolicy = take_anyif(Value, Property == \\\"sla.policyName\\\")\\n      by CaseId = EntityId\\n    | join kind=leftanti DeletedCases on CaseId;CaseState\\n| extend Owner = iff(isempty(AssignedTo), \\\"Unassigned\\\", AssignedTo)\\n| summarize ActiveCases=count() by Owner\\n| order by ActiveCases desc\",\"selectedWorkspaceIds\":[\"{HuntingWorkspaceId}\"]}",
+        "size": 0,
+        "queryType": "advancedHunting",
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "crossComponentResources": [
+          "{HuntingWorkspaceId:label}"
+        ],
+        "visualization": "barchart"
+      },
+      "name": "1bc4ad64-6dde-4518-92a0-69f052f4de41"
+    },
+    {
+      "type": 1,
+      "content": {
+        "json": "## Investigation timeline reconstruction\n\nProvides a chronological event trail for a selected case ID (or all cases). Use this to reconstruct actions, updates, and case transitions."
+      },
+      "name": "section-desc-investigation-timeline-reconstruction"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "title": "Investigation timeline reconstruction",
+        "query": "{\"__advancedHuntingSettings\":true,\"query\":\"let lookback = 1d * toint('{TimelineLookbackDays}');\\nSecurityCaseEvent\\n| where TimeGenerated >= ago(lookback)\\n| where EntityType == \\\"Case\\\"\\n| where isempty('{CaseFilter}') or tostring(EntityId) == '{CaseFilter}'\\n| project EventTime, CaseId=tostring(EntityId), OperationName, IsDeleted, PropertyNames, NewValues, TimeGenerated\\n| order by EventTime asc\",\"selectedWorkspaceIds\":[\"{HuntingWorkspaceId}\"]}",
+        "size": 0,
+        "queryType": "advancedHunting",
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "crossComponentResources": [
+          "{HuntingWorkspaceId:label}"
+        ],
+        "visualization": "table",
+        "gridSettings": {
+          "filter": true,
+          "rowLimit": 10000
+        }
+      },
+      "name": "1f332f5b-7e8a-42ee-b06d-9637810f6e80"
+    }
+  ],
+  "isLocked": false,
+  "fallbackResourceIds": []
+}
